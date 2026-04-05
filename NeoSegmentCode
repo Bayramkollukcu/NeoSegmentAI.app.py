@@ -1,95 +1,106 @@
-pip install streamlit pandas numpy matplotlib seaborn scikit-learn plotly
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-import plotly.express as px
+import matplotlib.pyplot as plt
 
-# Sayfa başlığı
-st.set_page_config(page_title="NeoSegment AI", layout="wide")
-st.title("🔄 NeoSegment AI - Dinamik Müşteri Segmentasyonu")
-st.markdown("*Ralph Lauren'in 4D modelinden ilham alan yapay zeka destekli segmentasyon motoru*")
+st.set_page_config(page_title="NeoSegment AI MVP", layout="wide")
+st.title("🔄 NeoSegment AI - MVP")
+st.markdown("Müşterilerinizi segmentlere ayırın ve bir sonraki ihtiyaçlarını tahmin edin.")
 
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Parametreler")
-    n_clusters = st.slider("Segment Sayısı", min_value=2, max_value=8, value=4)
-    
-    # Örnek veri oluştur
-    st.header("📊 Veri")
-    n_customers = st.number_input("Müşteri Sayısı", min_value=50, max_value=500, value=200)
+# 1. Örnek veri oluştur (150 müşteri)
+np.random.seed(42)
+n_customers = 150
+data = pd.DataFrame({
+    'Müşteri_ID': [f'C{i:03d}' for i in range(n_customers)],
+    'Yaş': np.random.randint(18, 70, n_customers),
+    'Yıllık_Gelir': np.random.randint(20000, 150000, n_customers),
+    'Harcama_Skoru': np.random.randint(0, 100, n_customers),
+    'Ziyaret_Sıklığı': np.random.randint(1, 20, n_customers) / 2
+})
 
-# Ana içerik
-col1, col2 = st.columns(2)
+# 2. Segmentasyon (K-Means, 4 segment)
+features = ['Yaş', 'Yıllık_Gelir', 'Harcama_Skoru', 'Ziyaret_Sıklığı']
+X = data[features]
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
+data['Segment'] = kmeans.fit_predict(X_scaled)
+
+# 3. Segmentlere anlamlı isimler ver (kurallı)
+segment_centers = scaler.inverse_transform(kmeans.cluster_centers_)
+names = []
+for i, center in enumerate(segment_centers):
+    gelir = center[1]
+    harcama = center[2]
+    if gelir > 80000 and harcama > 70:
+        names.append("✨ Premium Sadık")
+    elif gelir > 60000 and harcama > 50:
+        names.append("💎 Trend Takipçisi")
+    elif gelir < 40000 or harcama < 40:
+        names.append("🏷️ Fırsat Avcısı")
+    else:
+        names.append("📈 Potansiyel Yükselen")
+data['Segment_Adı'] = data['Segment'].map({i: names[i] for i in range(4)})
+
+# 4. Yan panel: segment isimlerini elle değiştirme imkanı
+st.sidebar.header("Segment İsimleri")
+custom_names = []
+for i in range(4):
+    default = names[i]
+    new_name = st.sidebar.text_input(f"Segment {i}", value=default, key=f"seg{i}")
+    custom_names.append(new_name)
+data['Segment_Adı'] = data['Segment'].map({i: custom_names[i] for i in range(4)})
+
+# 5. Ana gösterim
+col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("1. Müşteri Verileri")
+    st.subheader("Segment Dağılımı")
+    seg_counts = data['Segment_Adı'].value_counts().reset_index()
+    seg_counts.columns = ['Segment', 'Müşteri Sayısı']
+    st.dataframe(seg_counts, use_container_width=True)
     
-    # Rastgele müşteri verisi oluştur
-    np.random.seed(42)
-    data = pd.DataFrame({
-        'Müşteri_ID': range(1, n_customers+1),
-        'Yaş': np.random.randint(18, 70, n_customers),
-        'Yıllık_Gelir': np.random.randint(20000, 150000, n_customers),
-        'Harcama_Skoru': np.random.randint(1, 100, n_customers),
-        'Alışveriş_Sıklığı': np.random.randint(1, 30, n_customers) / 10
-    })
+    selected_seg = st.selectbox("Bir segment seçin", data['Segment_Adı'].unique())
+    seg_data = data[data['Segment_Adı'] == selected_seg]
+    st.metric("Müşteri Sayısı", len(seg_data))
     
-    st.dataframe(data.head(10))
-
+    # Ortalamalar
+    avg = seg_data[features].mean().round(1)
+    st.write("**Ortalama Özellikler:**")
+    st.write(f"- Yaş: {avg['Yaş']}")
+    st.write(f"- Yıllık Gelir: ${avg['Yıllık_Gelir']:,.0f}")
+    st.write(f"- Harcama Skoru: {avg['Harcama_Skoru']}")
+    st.write(f"- Ziyaret Sıklığı (aylık): {avg['Ziyaret_Sıklığı']}")
+    
+    # Tahmin: Bir sonraki ürün grubu
+    st.subheader("🔮 Tahmin: Sıradaki Ürün Grubu")
+    if "Premium" in selected_seg:
+        urun = "Lüks koleksiyon, sınırlı üretim aksesuarlar"
+    elif "Trend" in selected_seg:
+        urun = "Yeni sezon ürünleri, kombin önerileri"
+    elif "Fırsat" in selected_seg:
+        urun = "Outlet, indirimli setler, kuponlar"
+    else:
+        urun = "Popüler ürünler, tamamlayıcı parçalar"
+    st.success(f"📦 {urun}")
+    
 with col2:
-    st.subheader("2. Segmentasyon Sonuçları")
+    st.subheader("Segment Görselleştirme")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    colors = ['red', 'blue', 'green', 'orange'][:len(custom_names)]
+    for i, seg_name in enumerate(custom_names):
+        subset = data[data['Segment_Adı'] == seg_name]
+        ax.scatter(subset['Yaş'], subset['Harcama_Skoru'], label=seg_name, alpha=0.7)
+    ax.set_xlabel("Yaş")
+    ax.set_ylabel("Harcama Skoru")
+    ax.set_title("Segmentler (Yaş vs Harcama)")
+    ax.legend()
+    st.pyplot(fig)
     
-    # K-Means ile segmentasyon
-    features = data[['Yaş', 'Yıllık_Gelir', 'Harcama_Skoru']]
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features)
-    
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    data['Segment'] = kmeans.fit_predict(features_scaled)
-    
-    # Segment dağılımı
-    seg_counts = data['Segment'].value_counts().sort_index()
-    st.bar_chart(seg_counts)
+    st.subheader("Segment Ortalamaları")
+    st.dataframe(data.groupby('Segment_Adı')[features].mean().round(1))
 
-# 3D Görselleştirme
-st.subheader("3. Segmentlerin 3D Görünümü")
-fig = px.scatter_3d(
-    data, x='Yaş', y='Yıllık_Gelir', z='Harcama_Skoru',
-    color='Segment', hover_data=['Müşteri_ID'],
-    title="Müşteri Segmentleri (Yaş, Gelir, Harcama)"
-)
-st.plotly_chart(fig, use_container_width=True)
-
-# Segment özeti
-st.subheader("4. Segment Özeti")
-segment_summary = data.groupby('Segment').agg({
-    'Yaş': 'mean',
-    'Yıllık_Gelir': 'mean',
-    'Harcama_Skoru': 'mean',
-    'Müşteri_ID': 'count'
-}).rename(columns={'Müşteri_ID': 'Müşteri_Sayısı'})
-st.dataframe(segment_summary.style.format({
-    'Yaş': '{:.1f}',
-    'Yıllık_Gelir': '${:.0f}',
-    'Harcama_Skoru': '{:.1f}'
-}))
-
-# Dinamik güncelleme simülasyonu
-st.subheader("5. Dinamik Segment Güncelleme Simülasyonu")
-if st.button("🔄 Yeni Alışveriş Verisi Ekle (Segmentler Güncellensin)"):
-    # Yeni bir müşteri ekle
-    new_customer = pd.DataFrame({
-        'Yaş': [np.random.randint(18, 70)],
-        'Yıllık_Gelir': [np.random.randint(20000, 150000)],
-        'Harcama_Skoru': [np.random.randint(1, 100)]
-    })
-    
-    # Yeni müşteriyi ölçeklendir ve segmentini tahmin et
-    new_scaled = scaler.transform(new_customer)
-    new_segment = kmeans.predict(new_scaled)[0]
-    
-    st.success(f"✅ Yeni müşteri eklendi! Tahmini segment: **{new_segment}**")
-    st.info("💡 Gerçek uygulamada, her yeni veri geldiğinde model otomatik yeniden eğitilir ve segmentler dinamik olarak güncellenir.")
+st.caption("NeoSegment AI MVP - Ralph Lauren 4D modelinden ilham alınmıştır.")
