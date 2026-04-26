@@ -18,8 +18,11 @@ st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout=
 st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
 st.markdown("Ralph Lauren 4D Modeli (Derinlik, Dinamiklik, Arzu Edilirlik, Dağıtım) esinlidir.")
 
+# Grafik DPI ayarı (biraz küçültmek için)
+plt.rcParams['figure.dpi'] = 100
+
 # ------------------------------
-# 1. VERİ OLUŞTURMA (SENTETİK)
+# 1. VERİ OLUŞTURMA (SENTETİK) - CACHE
 # ------------------------------
 @st.cache_data
 def generate_data():
@@ -68,14 +71,14 @@ features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_vis
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df[features_seg])
 
-# Elbow grafiği
+# Elbow grafiği (boyut küçültüldü)
 inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled).inertia_ for k in range(2,8)]
-fig_elbow, ax = plt.subplots()
+fig_elbow, ax = plt.subplots(figsize=(6, 4))
 ax.plot(range(2,8), inertia, marker='o')
 ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
 ax.set_xlabel('Küme Sayısı')
 ax.set_ylabel('Inertia')
-st.pyplot(fig_elbow)
+st.pyplot(fig_elbow, use_container_width=False)
 
 # 4 küme ile segmentasyon
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
@@ -95,15 +98,15 @@ for i, seg in enumerate(centers.index):
         seg_names[seg] = 'Riskli / Uyuyan'
 df['segment_name'] = df['segment'].map(seg_names)
 
-# PCA görselleştirme
+# PCA görselleştirme (boyut küçültüldü)
 pca = PCA(n_components=2)
 pca_result = pca.fit_transform(X_scaled)
 df['pca1'], df['pca2'] = pca_result[:,0], pca_result[:,1]
 
-fig_pca, ax = plt.subplots(figsize=(8,5))
+fig_pca, ax = plt.subplots(figsize=(7, 5))
 sns.scatterplot(data=df, x='pca1', y='pca2', hue='segment_name', palette='Set2', ax=ax)
 ax.set_title('Segmentler (PCA Projeksiyonu)')
-st.pyplot(fig_pca)
+st.pyplot(fig_pca, use_container_width=False)
 
 # ------------------------------
 # 3. NEXT PURCHASE MODELİ (Random Forest)
@@ -122,13 +125,14 @@ auc_mean = cv_scores.mean()
 rf.fit(X_model, y_model)
 df['next_purchase_prob'] = rf.predict_proba(X_model)[:,1]
 
-# Özellik önemleri
+# Özellik önemleri (boyut küçültüldü, etiketler döndürüldü)
 importances = pd.Series(rf.feature_importances_, index=feature_cols).sort_values(ascending=False)
-fig_imp, ax = plt.subplots()
-importances.plot(kind='bar', ax=ax)
+fig_imp, ax = plt.subplots(figsize=(6, 4))
+importances.plot(kind='bar', ax=ax, width=0.7)
 ax.set_title('Özellik Önemleri')
 ax.set_ylabel('Önem')
-st.pyplot(fig_imp)
+plt.xticks(rotation=45, ha='right')
+st.pyplot(fig_imp, use_container_width=False)
 
 # ------------------------------
 # 4. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Müşteri Seçimi)
@@ -152,7 +156,7 @@ with col1:
 
 with col2:
     st.subheader("🎯 Kişisel Öneriler")
-    # Ürün önerisi (segment bazlı manuel)
+    # Ürün önerisi (segment bazlı)
     seg_product_map = {
         'Premium Sadık': 'Polo T-shirt (Premium Koleksiyon)',
         'Aktif Orta Sınıf': 'Classic Fit Oxford Gömlek',
@@ -185,19 +189,20 @@ with col2:
     st.markdown(f"🏷️ **İndirim Stratejisi:** {discount_str}")
 
 # ------------------------------
-# 5. TOPLU PERFORMANS ÖZETİ
+# 5. TOPLU PERFORMANS ÖZETİ VE SEGMENT DAĞILIMI
 # ------------------------------
 st.markdown("---")
 st.header("📊 Model Performans Özeti")
 st.metric("Cross-Validation ROC AUC (5-fold)", f"{auc_mean:.3f}")
 st.caption("ROC AUC 0.70 üzeri iyi, 0.80 üzeri mükemmel kabul edilir.")
 
-# Segment dağılımı
-fig_seg, ax = plt.subplots()
-df['segment_name'].value_counts().plot(kind='bar', ax=ax, color='lightblue')
+# Segment dağılımı (boyut küçültüldü, etiketler döndürüldü)
+fig_seg, ax = plt.subplots(figsize=(6, 4))
+df['segment_name'].value_counts().plot(kind='bar', ax=ax, color='lightblue', width=0.7)
 ax.set_title('Segment Dağılımı')
 ax.set_xlabel('Segment')
 ax.set_ylabel('Müşteri Sayısı')
-st.pyplot(fig_seg)
+plt.xticks(rotation=45, ha='right')
+st.pyplot(fig_seg, use_container_width=False)
 
 st.success("✅ Prototip başarıyla çalışıyor! Her müşteri için öneriler ve tahminler üretebilirsiniz.")
