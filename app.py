@@ -18,11 +18,8 @@ st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout=
 st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
 st.markdown("Ralph Lauren 4D Modeli (Derinlik, Dinamiklik, Arzu Edilirlik, Dağıtım) esinlidir.")
 
-# Grafik DPI ayarı (biraz küçültmek için)
-plt.rcParams['figure.dpi'] = 100
-
 # ------------------------------
-# 1. VERİ OLUŞTURMA (SENTETİK) - CACHE
+# 1. VERİ OLUŞTURMA (SENTETİK) - Ay bazlı tercih eklendi
 # ------------------------------
 @st.cache_data
 def generate_data():
@@ -37,6 +34,12 @@ def generate_data():
     last_30_days_visits = np.random.poisson(lam=5, size=n).clip(0,30)
     wishlist_count = np.random.poisson(lam=2, size=n).clip(0,15)
     preferred_channel = np.random.choice([0,1,2], size=n, p=[0.5,0.4,0.1])
+    
+    # YENİ: Ay tercihi (1-12) – müşterinin en çok alışveriş yaptığı ay
+    # Yaz ayları (6-8) daha popüler, kış ayları daha az
+    month_probs = [0.06,0.06,0.07,0.08,0.09,0.12,0.13,0.12,0.09,0.07,0.06,0.05]
+    preferred_month = np.random.choice(range(1,13), size=n, p=month_probs)
+    
     age = np.random.normal(35,10, size=n).astype(int).clip(18,70)
     discount_sensitivity = np.random.beta(2,5, size=n)
     avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
@@ -55,6 +58,7 @@ def generate_data():
         'last_30_days_visits': last_30_days_visits,
         'wishlist_count': wishlist_count,
         'preferred_channel': preferred_channel,
+        'preferred_month': preferred_month,   # YENİ
         'age': age,
         'avg_discount_used': avg_discount_used,
         'next_purchase_30d': next_purchase_30d,
@@ -71,9 +75,9 @@ features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_vis
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df[features_seg])
 
-# Elbow grafiği (boyut küçültüldü)
+# Elbow grafiği
 inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled).inertia_ for k in range(2,8)]
-fig_elbow, ax = plt.subplots(figsize=(6, 4))
+fig_elbow, ax = plt.subplots(figsize=(6,4))
 ax.plot(range(2,8), inertia, marker='o')
 ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
 ax.set_xlabel('Küme Sayısı')
@@ -98,12 +102,12 @@ for i, seg in enumerate(centers.index):
         seg_names[seg] = 'Riskli / Uyuyan'
 df['segment_name'] = df['segment'].map(seg_names)
 
-# PCA görselleştirme (boyut küçültüldü)
+# PCA görselleştirme
 pca = PCA(n_components=2)
 pca_result = pca.fit_transform(X_scaled)
 df['pca1'], df['pca2'] = pca_result[:,0], pca_result[:,1]
 
-fig_pca, ax = plt.subplots(figsize=(7, 5))
+fig_pca, ax = plt.subplots(figsize=(7,5))
 sns.scatterplot(data=df, x='pca1', y='pca2', hue='segment_name', palette='Set2', ax=ax)
 ax.set_title('Segmentler (PCA Projeksiyonu)')
 st.pyplot(fig_pca, use_container_width=False)
@@ -112,7 +116,7 @@ st.pyplot(fig_pca, use_container_width=False)
 # 3. NEXT PURCHASE MODELİ (Random Forest)
 # ------------------------------
 feature_cols = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits',
-                'wishlist_count', 'preferred_channel', 'age', 'avg_discount_used']
+                'wishlist_count', 'preferred_channel', 'preferred_month', 'age', 'avg_discount_used']
 X_model = df[feature_cols]
 y_model = df['next_purchase_30d']
 
@@ -125,9 +129,9 @@ auc_mean = cv_scores.mean()
 rf.fit(X_model, y_model)
 df['next_purchase_prob'] = rf.predict_proba(X_model)[:,1]
 
-# Özellik önemleri (boyut küçültüldü, etiketler döndürüldü)
+# Özellik önemleri
 importances = pd.Series(rf.feature_importances_, index=feature_cols).sort_values(ascending=False)
-fig_imp, ax = plt.subplots(figsize=(6, 4))
+fig_imp, ax = plt.subplots(figsize=(6,4))
 importances.plot(kind='bar', ax=ax, width=0.7)
 ax.set_title('Özellik Önemleri')
 ax.set_ylabel('Önem')
@@ -135,7 +139,7 @@ plt.xticks(rotation=45, ha='right')
 st.pyplot(fig_imp, use_container_width=False)
 
 # ------------------------------
-# 4. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Müşteri Seçimi)
+# 4. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Müşteri Seçimi) - AY BAZLI
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
@@ -170,14 +174,22 @@ with col2:
     channel_map = {0: 'Web sitesi', 1: 'Mobil App', 2: 'Mağaza'}
     st.success(f"📱 **Önerilen Kanal:** {channel_map[cust['preferred_channel']]}")
 
-    # Zaman önerisi (recency'ye göre basit)
-    if cust['recency_days'] < 7:
-        hour = 10
-    elif cust['recency_days'] < 30:
-        hour = 14
+    # ✅ Zaman önerisi: AY bazlı (artık saat yok)
+    # Ay isimleri listesi
+    month_names = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+                   'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık']
+    # Müşterinin preferred_month değeri 1-12 arası (veri setinde var)
+    best_month = month_names[cust['preferred_month'] - 1]
+    
+    # Ayrıca indirim duyarlılığına göre ek bir stratejik ay önerisi (isteğe bağlı)
+    if cust['discount_sensitivity'] > 0.7:
+        extra_month = "Kasım (Black Friday)"
+    elif cust['frequency'] > 10:
+        extra_month = "Eylül-Ekim (Yeni sezon)"
     else:
-        hour = 19
-    st.warning(f"⏰ **En Uygun Zaman:** {hour}:00 - {hour+1}:00 arası")
+        extra_month = "Ocak (Yılbaşı sonrası indirimler)"
+    
+    st.warning(f"⏰ **En Uygun Zaman (Ay):** {best_month} – {extra_month} dönemi de değerlendirilebilir.")
 
     # İndirim stratejisi
     if cust['discount_sensitivity'] > 0.7:
@@ -189,15 +201,15 @@ with col2:
     st.markdown(f"🏷️ **İndirim Stratejisi:** {discount_str}")
 
 # ------------------------------
-# 5. TOPLU PERFORMANS ÖZETİ VE SEGMENT DAĞILIMI
+# 5. TOPLU PERFORMANS ÖZETİ
 # ------------------------------
 st.markdown("---")
 st.header("📊 Model Performans Özeti")
 st.metric("Cross-Validation ROC AUC (5-fold)", f"{auc_mean:.3f}")
 st.caption("ROC AUC 0.70 üzeri iyi, 0.80 üzeri mükemmel kabul edilir.")
 
-# Segment dağılımı (boyut küçültüldü, etiketler döndürüldü)
-fig_seg, ax = plt.subplots(figsize=(6, 4))
+# Segment dağılımı
+fig_seg, ax = plt.subplots(figsize=(6,4))
 df['segment_name'].value_counts().plot(kind='bar', ax=ax, color='lightblue', width=0.7)
 ax.set_title('Segment Dağılımı')
 ax.set_xlabel('Segment')
