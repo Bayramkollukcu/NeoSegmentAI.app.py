@@ -1,106 +1,203 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.decomposition import PCA
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+import warnings
+warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="NeoSegment AI MVP", layout="wide")
-st.title("🔄 NeoSegment AI - MVP")
-st.markdown("Müşterilerinizi segmentlere ayırın ve bir sonraki ihtiyaçlarını tahmin edin.")
+# ------------------------------
+# SAYFA YAPILANDIRMASI
+# ------------------------------
+st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout="wide")
+st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
+st.markdown("Ralph Lauren 4D Modeli (Derinlik, Dinamiklik, Arzu Edilirlik, Dağıtım) esinlidir.")
 
-# 1. Örnek veri oluştur (150 müşteri)
-np.random.seed(42)
-n_customers = 150
-data = pd.DataFrame({
-    'Müşteri_ID': [f'C{i:03d}' for i in range(n_customers)],
-    'Yaş': np.random.randint(18, 70, n_customers),
-    'Yıllık_Gelir': np.random.randint(20000, 150000, n_customers),
-    'Harcama_Skoru': np.random.randint(0, 100, n_customers),
-    'Ziyaret_Sıklığı': np.random.randint(1, 20, n_customers) / 2
-})
+# ------------------------------
+# 1. VERİ OLUŞTURMA (SENTETİK)
+# ------------------------------
+@st.cache_data
+def generate_data():
+    np.random.seed(42)
+    n = 500
 
-# 2. Segmentasyon (K-Means, 4 segment)
-features = ['Yaş', 'Yıllık_Gelir', 'Harcama_Skoru', 'Ziyaret_Sıklığı']
-X = data[features]
+    customer_id = np.arange(1, n+1)
+    recency_days = np.random.exponential(scale=15, size=n).astype(int).clip(0,90)
+    frequency = np.random.poisson(lam=8, size=n) + 1
+    avg_basket = np.random.gamma(2,100, size=n).astype(int) + 50
+    monetary_total = (frequency * avg_basket).astype(int).clip(100,50000)
+    last_30_days_visits = np.random.poisson(lam=5, size=n).clip(0,30)
+    wishlist_count = np.random.poisson(lam=2, size=n).clip(0,15)
+    preferred_channel = np.random.choice([0,1,2], size=n, p=[0.5,0.4,0.1])
+    age = np.random.normal(35,10, size=n).astype(int).clip(18,70)
+    discount_sensitivity = np.random.beta(2,5, size=n)
+    avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
+
+    # Hedef: next_purchase_30d
+    log_odds = (-0.05*recency_days + 0.1*frequency + 0.005*(monetary_total/1000) +
+                0.08*last_30_days_visits + 0.15*wishlist_count + 0.01*avg_discount_used -0.005*age -1.5)
+    prob_next = 1/(1+np.exp(-log_odds))
+    next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
+
+    df = pd.DataFrame({
+        'customer_id': customer_id,
+        'recency_days': recency_days,
+        'frequency': frequency,
+        'monetary_total': monetary_total,
+        'last_30_days_visits': last_30_days_visits,
+        'wishlist_count': wishlist_count,
+        'preferred_channel': preferred_channel,
+        'age': age,
+        'avg_discount_used': avg_discount_used,
+        'next_purchase_30d': next_purchase_30d,
+        'discount_sensitivity': discount_sensitivity
+    })
+    return df
+
+df = generate_data()
+
+# ------------------------------
+# 2. MÜŞTERİ SEGMENTASYONU (K-Means)
+# ------------------------------
+features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+X_scaled = scaler.fit_transform(df[features_seg])
 
+# Elbow grafiği
+inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled).inertia_ for k in range(2,8)]
+fig_elbow, ax = plt.subplots()
+ax.plot(range(2,8), inertia, marker='o')
+ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
+ax.set_xlabel('Küme Sayısı')
+ax.set_ylabel('Inertia')
+st.pyplot(fig_elbow)
+
+# 4 küme ile segmentasyon
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
-data['Segment'] = kmeans.fit_predict(X_scaled)
+df['segment'] = kmeans.fit_predict(X_scaled)
 
-# 3. Segmentlere anlamlı isimler ver (kurallı)
-segment_centers = scaler.inverse_transform(kmeans.cluster_centers_)
-names = []
-for i, center in enumerate(segment_centers):
-    gelir = center[1]
-    harcama = center[2]
-    if gelir > 80000 and harcama > 70:
-        names.append("✨ Premium Sadık")
-    elif gelir > 60000 and harcama > 50:
-        names.append("💎 Trend Takipçisi")
-    elif gelir < 40000 or harcama < 40:
-        names.append("🏷️ Fırsat Avcısı")
+# Segment isimlendirme (monetary_total ortalamasına göre)
+centers = df.groupby('segment')['monetary_total'].mean().sort_values(ascending=False)
+seg_names = {}
+for i, seg in enumerate(centers.index):
+    if i == 0:
+        seg_names[seg] = 'Premium Sadık'
+    elif i == 1:
+        seg_names[seg] = 'Aktif Orta Sınıf'
+    elif i == 2:
+        seg_names[seg] = 'Fırsatçı İndirim Avcısı'
     else:
-        names.append("📈 Potansiyel Yükselen")
-data['Segment_Adı'] = data['Segment'].map({i: names[i] for i in range(4)})
+        seg_names[seg] = 'Riskli / Uyuyan'
+df['segment_name'] = df['segment'].map(seg_names)
 
-# 4. Yan panel: segment isimlerini elle değiştirme imkanı
-st.sidebar.header("Segment İsimleri")
-custom_names = []
-for i in range(4):
-    default = names[i]
-    new_name = st.sidebar.text_input(f"Segment {i}", value=default, key=f"seg{i}")
-    custom_names.append(new_name)
-data['Segment_Adı'] = data['Segment'].map({i: custom_names[i] for i in range(4)})
+# PCA görselleştirme
+pca = PCA(n_components=2)
+pca_result = pca.fit_transform(X_scaled)
+df['pca1'], df['pca2'] = pca_result[:,0], pca_result[:,1]
 
-# 5. Ana gösterim
-col1, col2 = st.columns([1, 2])
+fig_pca, ax = plt.subplots(figsize=(8,5))
+sns.scatterplot(data=df, x='pca1', y='pca2', hue='segment_name', palette='Set2', ax=ax)
+ax.set_title('Segmentler (PCA Projeksiyonu)')
+st.pyplot(fig_pca)
 
+# ------------------------------
+# 3. NEXT PURCHASE MODELİ (Random Forest)
+# ------------------------------
+feature_cols = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits',
+                'wishlist_count', 'preferred_channel', 'age', 'avg_discount_used']
+X_model = df[feature_cols]
+y_model = df['next_purchase_30d']
+
+rf = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+cv = StratifiedKFold(5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(rf, X_model, y_model, scoring='roc_auc', cv=cv)
+auc_mean = cv_scores.mean()
+
+# Tüm veri ile eğit (demo için)
+rf.fit(X_model, y_model)
+df['next_purchase_prob'] = rf.predict_proba(X_model)[:,1]
+
+# Özellik önemleri
+importances = pd.Series(rf.feature_importances_, index=feature_cols).sort_values(ascending=False)
+fig_imp, ax = plt.subplots()
+importances.plot(kind='bar', ax=ax)
+ax.set_title('Özellik Önemleri')
+ax.set_ylabel('Önem')
+st.pyplot(fig_imp)
+
+# ------------------------------
+# 4. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Müşteri Seçimi)
+# ------------------------------
+st.markdown("---")
+st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
+
+customer_ids = df['customer_id'].tolist()
+selected_id = st.selectbox("Bir müşteri ID seçin:", customer_ids)
+cust = df[df['customer_id'] == selected_id].iloc[0]
+
+col1, col2 = st.columns(2)
 with col1:
-    st.subheader("Segment Dağılımı")
-    seg_counts = data['Segment_Adı'].value_counts().reset_index()
-    seg_counts.columns = ['Segment', 'Müşteri Sayısı']
-    st.dataframe(seg_counts, use_container_width=True)
-    
-    selected_seg = st.selectbox("Bir segment seçin", data['Segment_Adı'].unique())
-    seg_data = data[data['Segment_Adı'] == selected_seg]
-    st.metric("Müşteri Sayısı", len(seg_data))
-    
-    # Ortalamalar
-    avg = seg_data[features].mean().round(1)
-    st.write("**Ortalama Özellikler:**")
-    st.write(f"- Yaş: {avg['Yaş']}")
-    st.write(f"- Yıllık Gelir: ${avg['Yıllık_Gelir']:,.0f}")
-    st.write(f"- Harcama Skoru: {avg['Harcama_Skoru']}")
-    st.write(f"- Ziyaret Sıklığı (aylık): {avg['Ziyaret_Sıklığı']}")
-    
-    # Tahmin: Bir sonraki ürün grubu
-    st.subheader("🔮 Tahmin: Sıradaki Ürün Grubu")
-    if "Premium" in selected_seg:
-        urun = "Lüks koleksiyon, sınırlı üretim aksesuarlar"
-    elif "Trend" in selected_seg:
-        urun = "Yeni sezon ürünleri, kombin önerileri"
-    elif "Fırsat" in selected_seg:
-        urun = "Outlet, indirimli setler, kuponlar"
-    else:
-        urun = "Popüler ürünler, tamamlayıcı parçalar"
-    st.success(f"📦 {urun}")
-    
-with col2:
-    st.subheader("Segment Görselleştirme")
-    fig, ax = plt.subplots(figsize=(8, 5))
-    colors = ['red', 'blue', 'green', 'orange'][:len(custom_names)]
-    for i, seg_name in enumerate(custom_names):
-        subset = data[data['Segment_Adı'] == seg_name]
-        ax.scatter(subset['Yaş'], subset['Harcama_Skoru'], label=seg_name, alpha=0.7)
-    ax.set_xlabel("Yaş")
-    ax.set_ylabel("Harcama Skoru")
-    ax.set_title("Segmentler (Yaş vs Harcama)")
-    ax.legend()
-    st.pyplot(fig)
-    
-    st.subheader("Segment Ortalamaları")
-    st.dataframe(data.groupby('Segment_Adı')[features].mean().round(1))
+    st.subheader("📋 Müşteri Profili")
+    st.metric("Segment", cust['segment_name'])
+    st.metric("Next Purchase Olasılığı", f"{cust['next_purchase_prob']:.0%}")
+    st.metric("Son Alışveriş (gün)", f"{cust['recency_days']} gün")
+    st.metric("Toplam Harcama (TL)", f"{cust['monetary_total']:,.0f}")
+    st.metric("Wishlist Adedi", cust['wishlist_count'])
+    st.metric("İndirim Duyarlılığı", f"{cust['discount_sensitivity']:.0%}")
 
-st.caption("NeoSegment AI MVP - Ralph Lauren 4D modelinden ilham alınmıştır.")
+with col2:
+    st.subheader("🎯 Kişisel Öneriler")
+    # Ürün önerisi (segment bazlı manuel)
+    seg_product_map = {
+        'Premium Sadık': 'Polo T-shirt (Premium Koleksiyon)',
+        'Aktif Orta Sınıf': 'Classic Fit Oxford Gömlek',
+        'Fırsatçı İndirim Avcısı': 'İndirimli Kapüşonlu Sweatshirt',
+        'Riskli / Uyuyan': 'Sizi özledik! Özel %15 indirim kodu'
+    }
+    rec_product = seg_product_map.get(cust['segment_name'], 'Polo T-shirt')
+    st.info(f"📦 **En İyi Sonraki Ürün:** {rec_product}")
+
+    # Kanal önerisi
+    channel_map = {0: 'Web sitesi', 1: 'Mobil App', 2: 'Mağaza'}
+    st.success(f"📱 **Önerilen Kanal:** {channel_map[cust['preferred_channel']]}")
+
+    # Zaman önerisi (recency'ye göre basit)
+    if cust['recency_days'] < 7:
+        hour = 10
+    elif cust['recency_days'] < 30:
+        hour = 14
+    else:
+        hour = 19
+    st.warning(f"⏰ **En Uygun Zaman:** {hour}:00 - {hour+1}:00 arası")
+
+    # İndirim stratejisi
+    if cust['discount_sensitivity'] > 0.7:
+        discount_str = "Yüksek indirim (%20 kupon) gönder"
+    elif cust['discount_sensitivity'] > 0.4:
+        discount_str = "Sepette %10 indirim teklifi"
+    else:
+        discount_str = "Özel koleksiyon tanıtımı, indirim yok"
+    st.markdown(f"🏷️ **İndirim Stratejisi:** {discount_str}")
+
+# ------------------------------
+# 5. TOPLU PERFORMANS ÖZETİ
+# ------------------------------
+st.markdown("---")
+st.header("📊 Model Performans Özeti")
+st.metric("Cross-Validation ROC AUC (5-fold)", f"{auc_mean:.3f}")
+st.caption("ROC AUC 0.70 üzeri iyi, 0.80 üzeri mükemmel kabul edilir.")
+
+# Segment dağılımı
+fig_seg, ax = plt.subplots()
+df['segment_name'].value_counts().plot(kind='bar', ax=ax, color='lightblue')
+ax.set_title('Segment Dağılımı')
+ax.set_xlabel('Segment')
+ax.set_ylabel('Müşteri Sayısı')
+st.pyplot(fig_seg)
+
+st.success("✅ Prototip başarıyla çalışıyor! Her müşteri için öneriler ve tahminler üretebilirsiniz.")
