@@ -20,14 +20,13 @@ st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
 st.markdown("Ralph Lauren 4D Modeli (Derinlik, Dinamiklik, Arzu Edilirlik, Dağıtım) esinlidir.")
 
 # ------------------------------
-# 1. VERİ OLUŞTURMA (SENTETİK) - Geçmiş kategoriler ve hedef kategori dahil
+# 1. VERİ OLUŞTURMA (SENTETİK)
 # ------------------------------
 @st.cache_data
 def generate_data():
     np.random.seed(42)
     n = 500
 
-    # Müşteri temel özellikleri
     customer_id = np.arange(1, n+1)
     recency_days = np.random.exponential(scale=15, size=n).astype(int).clip(0,90)
     frequency = np.random.poisson(lam=8, size=n) + 1
@@ -37,7 +36,6 @@ def generate_data():
     wishlist_count = np.random.poisson(lam=2, size=n).clip(0,15)
     preferred_channel = np.random.choice([0,1,2], size=n, p=[0.5,0.4,0.1])
     
-    # Ay tercihi
     month_probs = [0.06,0.06,0.07,0.08,0.09,0.12,0.13,0.12,0.09,0.07,0.06,0.05]
     preferred_month = np.random.choice(range(1,13), size=n, p=month_probs)
     
@@ -45,7 +43,7 @@ def generate_data():
     discount_sensitivity = np.random.beta(2,5, size=n)
     avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
 
-    # ---------- Geçmiş alışveriş kategorileri ve hedef kategori ----------
+    # Kategoriler
     categories = ['Kadın', 'Erkek', 'Çocuk', 'Bebek', 'Home']
     cat_encoder = LabelEncoder()
     cat_encoder.fit(categories)
@@ -69,12 +67,10 @@ def generate_data():
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
-    # ----- YENİ: Recency etkisi U-şekilli (optimum 20 gün) -----
-    # recency_effect = -0.0025*(recency - 20)^2 + 0.9  (maks 0.9, min 0.2)
+    # U-şekilli recency etkisi (optimum 20 gün)
     recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
     recency_effect = np.clip(recency_effect, 0.2, 0.9)
     
-    # Hedef değişken: next_purchase_30d (U-şekilli recency kullan)
     log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
                 0.08*last_30_days_visits + 0.15*wishlist_count + 0.01*avg_discount_used -0.005*age - 2.0)
     prob_next = 1/(1+np.exp(-log_odds))
@@ -101,7 +97,7 @@ def generate_data():
 df, cat_encoder, categories = generate_data()
 
 # ------------------------------
-# 2. ÖZELLİK MÜHENDİSLİĞİ: Geçmiş kategorileri sayısallaştır
+# 2. ÖZELLİK MÜHENDİSLİĞİ (KATEGORİ)
 # ------------------------------
 def extract_category_features(row):
     past = row['past_categories']
@@ -119,7 +115,7 @@ other_features = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_v
                   'wishlist_count', 'preferred_channel', 'preferred_month', 'age', 'avg_discount_used']
 X_cat = pd.concat([df[other_features], cat_feature_df], axis=1)
 
-# Model eğitimi (kategori tahmini)
+# Kategori tahmin modeli
 X_train_cat, X_test_cat, y_train_cat, y_test_cat = train_test_split(X_cat, y_category, test_size=0.2, random_state=42, stratify=y_category)
 rf_cat = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 rf_cat.fit(X_train_cat, y_train_cat)
@@ -129,13 +125,13 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 3. MÜŞTERİ SEGMENTASYONU (K-Means)
+# 3. SEGMENTASYON
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df[features_seg])
 
-# Elbow grafiği (2D)
+# Elbow
 inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled).inertia_ for k in range(2,8)]
 fig_elbow, ax = plt.subplots(figsize=(6,4))
 ax.plot(range(2,8), inertia, marker='o')
@@ -144,7 +140,7 @@ ax.set_xlabel('Küme Sayısı')
 ax.set_ylabel('Inertia')
 st.pyplot(fig_elbow, use_container_width=False)
 
-# 4 küme ile segmentasyon
+# 4 küme
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled)
 centers = df.groupby('segment')['monetary_total'].mean().sort_values(ascending=False)
@@ -160,14 +156,14 @@ for i, seg in enumerate(centers.index):
         seg_names[seg] = 'Riskli / Uyuyan'
 df['segment_name'] = df['segment'].map(seg_names)
 
-# PCA 3 boyut için (3 bileşen)
+# PCA 3 boyut
 pca_3d = PCA(n_components=3)
 pca_result_3d = pca_3d.fit_transform(X_scaled)
 df['pca1'] = pca_result_3d[:,0]
 df['pca2'] = pca_result_3d[:,1]
 df['pca3'] = pca_result_3d[:,2]
 
-# 3B interaktif grafik (Plotly)
+# 3B interaktif grafik
 fig_3d = px.scatter_3d(df, x='pca1', y='pca2', z='pca3',
                        color='segment_name', title='Segmentler (3B PCA Projeksiyonu)',
                        color_discrete_sequence=px.colors.qualitative.Set2,
@@ -176,7 +172,7 @@ fig_3d.update_layout(width=800, height=600)
 st.plotly_chart(fig_3d, use_container_width=True)
 
 # ------------------------------
-# 4. NEXT PURCHASE MODELİ (Random Forest)
+# 4. NEXT PURCHASE MODELİ
 # ------------------------------
 feature_cols = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits',
                 'wishlist_count', 'preferred_channel', 'preferred_month', 'age', 'avg_discount_used']
@@ -201,7 +197,7 @@ plt.xticks(rotation=45, ha='right')
 st.pyplot(fig_imp, use_container_width=False)
 
 # ------------------------------
-# 5. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Müşteri Seçimi) - MEVSİME DUYARLI
+# 5. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
@@ -230,7 +226,7 @@ with col2:
     pred_proba = cust['predicted_category_proba']
     st.info(f"📂 **Tahmin Edilen Bir Sonraki Kategori:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
     
-    # MEVSİMSEL ÜRÜN KATALOĞU
+    # Mevsimsel ürün kataloğu
     month_season = {
         1: 'Kış', 2: 'Kış', 3: 'İlkbahar',
         4: 'İlkbahar', 5: 'İlkbahar', 6: 'Yaz',
@@ -297,7 +293,7 @@ with col2:
     st.markdown(f"🏷️ **İndirim Stratejisi:** {discount_str}")
 
 # ------------------------------
-# 6. TOPLU PERFORMANS ÖZETİ
+# 6. PERFORMANS ÖZETİ
 # ------------------------------
 st.markdown("---")
 st.header("📊 Model Performans Özeti")
@@ -309,7 +305,6 @@ with col_met2:
     st.metric("Next Category Tahmin Doğruluğu (Accuracy)", f"{cat_accuracy:.2%}")
     st.caption("Test seti üzerinden hesaplanmıştır.")
 
-# Segment dağılımı (2D bar)
 fig_seg, ax = plt.subplots(figsize=(6,4))
 df['segment_name'].value_counts().plot(kind='bar', ax=ax, color='lightblue', width=0.7)
 ax.set_title('Segment Dağılımı')
