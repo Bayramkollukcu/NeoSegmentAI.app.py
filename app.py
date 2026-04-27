@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cluster import KMeans
 from sklearn.ensemble import RandomForestClassifier
@@ -68,9 +69,14 @@ def generate_data():
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
-    # Hedef değişken: next_purchase_30d
-    log_odds = (-0.05*recency_days + 0.1*frequency + 0.005*(monetary_total/1000) +
-                0.08*last_30_days_visits + 0.15*wishlist_count + 0.01*avg_discount_used -0.005*age -1.5)
+    # ----- YENİ: Recency etkisi U-şekilli (optimum 20 gün) -----
+    # recency_effect = -0.0025*(recency - 20)^2 + 0.9  (maks 0.9, min 0.2)
+    recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
+    recency_effect = np.clip(recency_effect, 0.2, 0.9)
+    
+    # Hedef değişken: next_purchase_30d (U-şekilli recency kullan)
+    log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
+                0.08*last_30_days_visits + 0.15*wishlist_count + 0.01*avg_discount_used -0.005*age - 2.0)
     prob_next = 1/(1+np.exp(-log_odds))
     next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
 
@@ -113,7 +119,7 @@ other_features = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_v
                   'wishlist_count', 'preferred_channel', 'preferred_month', 'age', 'avg_discount_used']
 X_cat = pd.concat([df[other_features], cat_feature_df], axis=1)
 
-# Model eğitimi
+# Model eğitimi (kategori tahmini)
 X_train_cat, X_test_cat, y_train_cat, y_test_cat = train_test_split(X_cat, y_category, test_size=0.2, random_state=42, stratify=y_category)
 rf_cat = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 rf_cat.fit(X_train_cat, y_train_cat)
@@ -129,6 +135,7 @@ features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_vis
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df[features_seg])
 
+# Elbow grafiği (2D)
 inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled).inertia_ for k in range(2,8)]
 fig_elbow, ax = plt.subplots(figsize=(6,4))
 ax.plot(range(2,8), inertia, marker='o')
@@ -137,6 +144,7 @@ ax.set_xlabel('Küme Sayısı')
 ax.set_ylabel('Inertia')
 st.pyplot(fig_elbow, use_container_width=False)
 
+# 4 küme ile segmentasyon
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled)
 centers = df.groupby('segment')['monetary_total'].mean().sort_values(ascending=False)
@@ -152,14 +160,20 @@ for i, seg in enumerate(centers.index):
         seg_names[seg] = 'Riskli / Uyuyan'
 df['segment_name'] = df['segment'].map(seg_names)
 
-pca = PCA(n_components=2)
-pca_result = pca.fit_transform(X_scaled)
-df['pca1'], df['pca2'] = pca_result[:,0], pca_result[:,1]
+# PCA 3 boyut için (3 bileşen)
+pca_3d = PCA(n_components=3)
+pca_result_3d = pca_3d.fit_transform(X_scaled)
+df['pca1'] = pca_result_3d[:,0]
+df['pca2'] = pca_result_3d[:,1]
+df['pca3'] = pca_result_3d[:,2]
 
-fig_pca, ax = plt.subplots(figsize=(7,5))
-sns.scatterplot(data=df, x='pca1', y='pca2', hue='segment_name', palette='Set2', ax=ax)
-ax.set_title('Segmentler (PCA Projeksiyonu)')
-st.pyplot(fig_pca, use_container_width=False)
+# 3B interaktif grafik (Plotly)
+fig_3d = px.scatter_3d(df, x='pca1', y='pca2', z='pca3',
+                       color='segment_name', title='Segmentler (3B PCA Projeksiyonu)',
+                       color_discrete_sequence=px.colors.qualitative.Set2,
+                       hover_data=['customer_id', 'monetary_total', 'recency_days'])
+fig_3d.update_layout(width=800, height=600)
+st.plotly_chart(fig_3d, use_container_width=True)
 
 # ------------------------------
 # 4. NEXT PURCHASE MODELİ (Random Forest)
@@ -177,6 +191,7 @@ auc_mean = cv_scores.mean()
 rf.fit(X_model, y_model)
 df['next_purchase_prob'] = rf.predict_proba(X_model)[:,1]
 
+# Özellik önemleri
 importances = pd.Series(rf.feature_importances_, index=feature_cols).sort_values(ascending=False)
 fig_imp, ax = plt.subplots(figsize=(6,4))
 importances.plot(kind='bar', ax=ax, width=0.7)
@@ -294,6 +309,7 @@ with col_met2:
     st.metric("Next Category Tahmin Doğruluğu (Accuracy)", f"{cat_accuracy:.2%}")
     st.caption("Test seti üzerinden hesaplanmıştır.")
 
+# Segment dağılımı (2D bar)
 fig_seg, ax = plt.subplots(figsize=(6,4))
 df['segment_name'].value_counts().plot(kind='bar', ax=ax, color='lightblue', width=0.7)
 ax.set_title('Segment Dağılımı')
