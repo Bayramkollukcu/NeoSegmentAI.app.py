@@ -46,7 +46,7 @@ def generate_data():
 
     # ---------- YAŞAM EVRESİ ----------
     marital_status_options = ['Bekar', 'Evli', 'Boşanmış']
-    marital_probs = []
+    marital_status = []
     has_children = []
     for a in age:
         if a < 30:
@@ -58,9 +58,8 @@ def generate_data():
         else:
             mp = [0.1, 0.6, 0.3]
             child_prob = 0.3
-        marital_probs.append(mp)
+        marital_status.append(np.random.choice(marital_status_options, p=mp))
         has_children.append(np.random.choice([0,1], p=[1-child_prob, child_prob]))
-    marital_status = [np.random.choice(marital_status_options, p=mp) for mp in marital_probs]
 
     # ---------- Kategoriler ----------
     categories = ['Kadın', 'Erkek', 'Çocuk', 'Bebek', 'Home']
@@ -82,13 +81,11 @@ def generate_data():
             probs = [0.15, 0.20, 0.25, 0.25, 0.15]
         # Yaşam evresi etkisi
         if has_children[i] == 1:
-            probs[2] *= 1.5   # Çocuk kategorisi daha olası
+            probs[2] *= 1.5   # Çocuk
             probs[3] *= 1.2   # Bebek
         if marital_status[i] == 'Evli' and age[i] > 30:
-            probs[4] *= 1.3   # Home daha olası
-        # Normalize et
-        probs = np.array(probs)
-        probs = probs / probs.sum()
+            probs[4] *= 1.3   # Home
+        probs = np.array(probs) / np.sum(probs)
         past = np.random.choice(categories, size=5, p=probs).tolist()
         past_categories.append(past)
         next_cat = np.random.choice(categories, p=probs)
@@ -159,9 +156,8 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 3. KATEGORİ GEÇİŞ MATRİSİ (tüm müşterilerin geçmiş kategorilerinden)
+# 3. KATEGORİ GEÇİŞ MATRİSİ
 # ------------------------------
-# Her müşteri için ardışık kategorileri topla
 all_transitions = []
 for past in df['past_categories']:
     for i in range(len(past)-1):
@@ -172,7 +168,6 @@ transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], norm
 # ------------------------------
 # 4. BEKLEME SÜRESİ TAHMİNİ (Regresyon)
 # ------------------------------
-# Hedef: next_purchase_days (sentetik olarak recency_days ile ilişkili)
 next_purchase_days = np.random.poisson(lam=20, size=len(df)) + (df['recency_days'] * 0.5).astype(int)
 next_purchase_days = np.clip(next_purchase_days, 1, 90)
 X_wait = df[['recency_days', 'frequency', 'monetary_total', 'age', 'has_children'] + list(marital_dummies.columns)]
@@ -182,7 +177,7 @@ rf_wait.fit(X_wait, y_wait)
 df['predicted_wait_days'] = rf_wait.predict(X_wait).astype(int)
 
 # ------------------------------
-# 5. MÜŞTERİ SEGMENTASYONU (K-Means)
+# 5. MÜŞTERİ SEGMENTASYONU (K-Means) + ANLAMLI İSİMLENDİRME
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler = StandardScaler()
@@ -200,18 +195,27 @@ st.pyplot(fig_elbow, use_container_width=False)
 # 4 küme
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled)
-centers = df.groupby('segment')['monetary_total'].mean().sort_values(ascending=False)
-seg_names = {}
-for i, seg in enumerate(centers.index):
-    if i == 0:
-        seg_names[seg] = 'Premium Sadık'
-    elif i == 1:
-        seg_names[seg] = 'Aktif Orta Sınıf'
-    elif i == 2:
-        seg_names[seg] = 'Fırsatçı İndirim Avcısı'
+
+# Akıllı Segment İsimlendirme (monetary, recency, frequency kombinasyonu)
+seg_summary = df.groupby('segment').agg({
+    'monetary_total': 'mean',
+    'recency_days': 'mean',
+    'frequency': 'mean'
+}).reset_index()
+
+def assign_segment_name(row):
+    if row['monetary_total'] > 5000 and row['recency_days'] < 30:
+        return 'Premium Sadık'
+    elif row['monetary_total'] > 2000 and row['recency_days'] < 60:
+        return 'Aktif Orta Sınıf'
+    elif row['monetary_total'] < 2000 and row['recency_days'] < 30:
+        return 'Düşük Değerli Yeni'
     else:
-        seg_names[seg] = 'Riskli / Uyuyan'
-df['segment_name'] = df['segment'].map(seg_names)
+        return 'Riskli / Uyuyan'
+
+seg_summary['segment_name'] = seg_summary.apply(assign_segment_name, axis=1)
+seg_name_map = dict(zip(seg_summary['segment'], seg_summary['segment_name']))
+df['segment_name'] = df['segment'].map(seg_name_map)
 
 # PCA 3 boyut
 pca_3d = PCA(n_components=3)
@@ -254,7 +258,7 @@ plt.xticks(rotation=45, ha='right')
 st.pyplot(fig_imp, use_container_width=False)
 
 # ------------------------------
-# 7. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Yaşam evresi + geçiş matrisi + bekleme süresi)
+# 7. KİŞİSELLEŞTİRİLMİŞ ÖNERİLER (Müşteri Seçimi)
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
@@ -285,7 +289,7 @@ with col2:
     pred_proba = cust['predicted_category_proba']
     st.info(f"📂 **Tahmin Edilen Bir Sonraki Kategori:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
     
-    # Kategori geçiş olasılıkları (son kategoriden)
+    # Kategori geçiş olasılıkları
     last_cat = cust['past_categories'][-1]
     if last_cat in transition_matrix.index:
         trans_probs = transition_matrix.loc[last_cat].sort_values(ascending=False)
@@ -295,11 +299,10 @@ with col2:
     else:
         st.write("Geçiş bilgisi yetersiz.")
     
-    # Tahmini bekleme süresi
     st.metric("⏳ Tahmini Bekleme Süresi (bir sonraki alışverişe)", f"{cust['predicted_wait_days']} gün")
     st.caption("Bu süre, geçmiş alışveriş sıklığı, son aktivite ve yaşam evrenize göre hesaplanmıştır.")
     
-    # Mevsimsel ürün önerisi (önceki gibi)
+    # Mevsimsel ürün kataloğu (tam versiyon)
     month_season = {
         1: 'Kış', 2: 'Kış', 3: 'İlkbahar',
         4: 'İlkbahar', 5: 'İlkbahar', 6: 'Yaz',
@@ -309,24 +312,44 @@ with col2:
     current_month = cust['preferred_month']
     season = month_season[current_month]
     
-    seasonal_products = { ... }  # (önceki tablo aynen kullanılabilir, kısaltmak için tekrar yazmıyorum)
-    # Not: Bu dictionary uzun olduğu için burada tekrar edilmedi. Aynen koruyun.
-    # Kodun tamamı için bir önceki sürümdeki seasonal_products sözlüğünü aynen alın.
-    
-    # Bu kısmı önceki kodunuzdan alın (seasonal_products tanımlı olmalı)
-    # Örnek olarak kısa bir versiyon:
     seasonal_products = {
-        'Kadın': {'Kış': ['Kadın Triko Kazak'], 'İlkbahar': ['Kadın Trençkot'], 'Yaz': ['Kadın Elbise'], 'Sonbahar': ['Kadın Hırka']},
-        'Erkek': {'Kış': ['Erkek Yün Kazak'], 'İlkbahar': ['Erkek Trençkot'], 'Yaz': ['Erkek Polo Tişört'], 'Sonbahar': ['Erkek Hırka']},
-        'Çocuk': {'Kış': ['Çocuk Yün Kazak'], 'İlkbahar': ['Çocuk Eşofman'], 'Yaz': ['Çocuk Polo'], 'Sonbahar': ['Çocuk Sweatshirt']},
-        'Bebek': {'Kış': ['Bebek Tulum'], 'İlkbahar': ['Bebek Pamuklu'], 'Yaz': ['Bebek Kısa Kollu'], 'Sonbahar': ['Bebek Polar']},
-        'Home': {'Kış': ['Kalın Nevresim'], 'İlkbahar': ['Pamuklu Nevresim'], 'Yaz': ['İnce Nevresim'], 'Sonbahar': ['Kadife Yastık']}
+        'Kadın': {
+            'Kış': ['Kadın Triko Kazak', 'Kadın Yün Mont', 'Kadın Kalın Taban Bot'],
+            'İlkbahar': ['Kadın Trençkot', 'Kadın İnce Kazak', 'Kadın Babet Ayakkabı'],
+            'Yaz': ['Kadın Elbise', 'Kadın Polo Tişört', 'Kadın Terlik'],
+            'Sonbahar': ['Kadın Hırka', 'Kadın Yağmurluk', 'Kadın Çizme']
+        },
+        'Erkek': {
+            'Kış': ['Erkek Yün Kazak', 'Erkek Pike Mont', 'Erkek Bot'],
+            'İlkbahar': ['Erkek Trençkot', 'Erkek Oxford Gömlek', 'Erkek Spor Ayakkabı'],
+            'Yaz': ['Erkek Polo Tişört', 'Erkek Şort', 'Erkek Terlik'],
+            'Sonbahar': ['Erkek Hırka', 'Erkek Bomber Ceket', 'Erkek Günlük Ayakkabı']
+        },
+        'Çocuk': {
+            'Kış': ['Çocuk Yün Kazak', 'Çocuk Mont', 'Çocuk Bot'],
+            'İlkbahar': ['Çocuk Eşofman Takımı', 'Çocuk Gömlek', 'Çocuk Spor Ayakkabı'],
+            'Yaz': ['Çocuk Polo Tişört', 'Çocuk Şort', 'Çocuk Terlik'],
+            'Sonbahar': ['Çocuk Hırka', 'Çocuk Sweatshirt', 'Çocuk Günlük Ayakkabı']
+        },
+        'Bebek': {
+            'Kış': ['Bebek Tulum (kalın)', 'Bebek Battaniye', 'Bebek Beresi'],
+            'İlkbahar': ['Bebek Pamuklu Tulum', 'Bebek Hırka', 'Bebek Patik'],
+            'Yaz': ['Bebek Kısa Kollu Tulum', 'Bebek Şapka', 'Bebek Sandalet'],
+            'Sonbahar': ['Bebek Polar Tulum', 'Bebek Eldiven', 'Bebek Çorap']
+        },
+        'Home': {
+            'Kış': ['Kalın Nevresim Takımı', 'Flanel Yatak Örtüsü', 'Yumuşak Halı'],
+            'İlkbahar': ['Pamuklu Nevresim', 'Hafif Banyo Havlusu', 'Dekoratif Vazo'],
+            'Yaz': ['İnce Nevresim', 'Plaj Havlusu', 'Fotoselli Mum'],
+            'Sonbahar': ['Kadife Yastık Kılıfı', 'Pike Takımı', 'Dekoratif Sonbahar Çelengi']
+        }
     }
     cat_season_products = seasonal_products.get(predicted_cat, seasonal_products['Erkek'])
     suitable_products = cat_season_products.get(season, cat_season_products['Kış'])
     recommended_product = suitable_products[0]
     
     st.success(f"📦 **Önerilen Ürün:** {recommended_product} ({season} mevsimine uygun)")
+    st.caption("Öneri, tahmin edilen kategori ve mevsimsel faktöre göre yapılmıştır.")
     
     channel_map = {0: 'Web sitesi', 1: 'Mobil App', 2: 'Mağaza'}
     st.success(f"📱 **Önerilen İletişim Kanalı:** {channel_map[cust['preferred_channel']]}")
@@ -365,4 +388,4 @@ ax.set_ylabel('Müşteri Sayısı')
 plt.xticks(rotation=45, ha='right')
 st.pyplot(fig_seg, use_container_width=False)
 
-st.success("✅ Prototip; yaşam evresi, kategori geçiş matrisi ve bekleme süresi tahmini ile zenginleştirilmiştir.")
+st.success("✅ Prototip; yaşam evresi, kategori geçiş matrisi, bekleme süresi tahmini ve akıllı segment isimlendirmesi ile zenginleştirilmiştir.")
