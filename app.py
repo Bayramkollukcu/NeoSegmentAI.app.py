@@ -192,11 +192,15 @@ transition_df = pd.DataFrame(all_transitions, columns=['from', 'to'])
 transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], normalize='index')
 
 # ------------------------------
-# 5. NEXT PURCHASE MODELİ (Random Forest)
+# 5. NEXT PURCHASE MODELİ (Random Forest) - DÜZELTİLMİŞ
 # ------------------------------
-# Dinamik olarak age_ ile başlayan sütunları al
+# Dinamik olarak age_ ile başlayan sütunları al (df'de mevcut)
 age_cols = [col for col in df.columns if col.startswith('age_')]
+# Kullanılacak tüm sütunlar
 feature_cols_np = other_features + [f'last3_{c}' for c in categories] + age_cols
+# Sadece df'de bulunanları filtrele (ekstra güvenlik)
+feature_cols_np = [col for col in feature_cols_np if col in df.columns]
+
 X_np = df[feature_cols_np]
 y_np = df['next_purchase_30d']
 rf_np = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
