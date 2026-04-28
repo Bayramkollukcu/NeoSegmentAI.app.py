@@ -6,16 +6,16 @@ import seaborn as sns
 import plotly.express as px
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Müşteri 360° Analitik", layout="wide")
+st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout="wide")
 st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
-st.markdown("Ralph Lauren 4D Modeli esinlidir. Tüm özellikler (son alışveriş kategorileri, bekleme süresi, yaş, medeni durum, çocuk) tahmin edilir.")
+st.markdown("Ralph Lauren 4D Modeli esinlidir.")
 
 # ------------------------------
 # 1. VERİ OLUŞTURMA (YAŞ SÜTUNU YOK)
@@ -67,7 +67,6 @@ def generate_data():
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
-    # Next purchase 30d (binary)
     recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
     recency_effect = np.clip(recency_effect, 0.2, 0.9)
     log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
@@ -75,11 +74,6 @@ def generate_data():
     prob_next = 1/(1+np.exp(-log_odds))
     next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
 
-    # Bekleme süresi (bir sonraki alışverişe kadar geçen gün) – ground truth
-    wait_days_true = np.random.poisson(lam=25, size=n) + (recency_days * 0.3).astype(int)
-    wait_days_true = np.clip(wait_days_true, 1, 90)
-
-    # Medeni durum ve çocuk sahibi olma
     marital_status_true = []
     has_children_true = []
     for a in age_true:
@@ -114,8 +108,7 @@ def generate_data():
         'next_purchase_30d': next_purchase_30d,
         'discount_sensitivity': discount_sensitivity,
         'past_categories': past_categories,
-        'next_category': next_category,
-        'wait_days_true': wait_days_true   # ground truth bekleme süresi
+        'next_category': next_category
     })
     ground_truth = {
         'age_group': age_group_true,
@@ -128,11 +121,11 @@ df, cat_encoder, categories, ground_truth = generate_data()
 n = len(df)
 
 # ------------------------------
-# 2. ÖZELLİK MÜHENDİSLİĞİ (SON 3 KATEGORİ)
+# 2. ÖZELLİK MÜHENDİSLİĞİ
 # ------------------------------
 def extract_last3_cat_features(row):
     past = row['past_categories']
-    last3 = past[-3:] if len(past)>=3 else past + ['TAMAM']*(3-len(past))
+    last3 = past[-3:] if len(past)>=3 else past + ['']*(3-len(past))
     counts = {cat: last3.count(cat) for cat in categories}
     return pd.Series([counts[c] for c in categories])
 
@@ -144,9 +137,7 @@ other_features = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_v
 X_base = df[other_features].copy()
 X = pd.concat([X_base, last3_cat_df], axis=1)
 
-# ------------------------------
-# 3. YAŞ ARALIĞI TAHMİNİ (Random Forest)
-# ------------------------------
+# Yaş grubu tahmini (Random Forest)
 age_groups = ['18-25', '26-35', '36-45', '46+']
 age_encoder = LabelEncoder()
 age_encoder.fit(age_groups)
@@ -162,18 +153,7 @@ age_dummies = pd.get_dummies(df['pred_age_group'], prefix='age')
 df = pd.concat([df, age_dummies], axis=1)
 
 # ------------------------------
-# 4. BEKLEME SÜRESİ TAHMİNİ (Random Forest Regressor)
-# ------------------------------
-X_wait = pd.concat([X, age_dummies], axis=1)
-y_wait = df['wait_days_true']
-X_train_wait, X_test_wait, y_train_wait, y_test_wait = train_test_split(X_wait, y_wait, test_size=0.2, random_state=42)
-rf_wait = RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42)
-rf_wait.fit(X_train_wait, y_train_wait)
-wait_rmse = np.sqrt(np.mean((rf_wait.predict(X_test_wait) - y_test_wait)**2))
-df['predicted_wait_days'] = rf_wait.predict(X_wait).astype(int)
-
-# ------------------------------
-# 5. MEDENİ DURUM VE ÇOCUK SAHİBİ OLMA (Lojistik Regresyon)
+# 3. MEDENİ DURUM VE ÇOCUK SAHİBİ OLMA MODELLERİ (Lojistik Regresyon)
 # ------------------------------
 X_marital = pd.concat([X, age_dummies], axis=1)
 y_marital = np.array([1 if m == 'Evli' else 0 for m in ground_truth['marital_status']])
@@ -202,7 +182,7 @@ df['prob_married'] = model_marital.predict_proba(X_marital_scaled_all)[:, 1]
 df['prob_child'] = model_child.predict_proba(X_child_scaled_all)[:, 1]
 
 # ------------------------------
-# 6. KATEGORİ GEÇİŞ MATRİSİ
+# 4. KATEGORİ GEÇİŞ MATRİSİ
 # ------------------------------
 all_transitions = []
 for past in df['past_categories']:
@@ -212,10 +192,15 @@ transition_df = pd.DataFrame(all_transitions, columns=['from', 'to'])
 transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], normalize='index')
 
 # ------------------------------
-# 7. NEXT PURCHASE MODELİ (Random Forest)
+# 5. NEXT PURCHASE MODELİ (Random Forest) - DÜZELTİLMİŞ
 # ------------------------------
+# Dinamik olarak age_ ile başlayan sütunları al (df'de mevcut)
 age_cols = [col for col in df.columns if col.startswith('age_')]
+# Kullanılacak tüm sütunlar
 feature_cols_np = other_features + [f'last3_{c}' for c in categories] + age_cols
+# Sadece df'de bulunanları filtrele (ekstra güvenlik)
+feature_cols_np = [col for col in feature_cols_np if col in df.columns]
+
 X_np = df[feature_cols_np]
 y_np = df['next_purchase_30d']
 rf_np = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
@@ -226,12 +211,13 @@ rf_np.fit(X_np, y_np)
 df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 
 # ------------------------------
-# 8. MÜŞTERİ SEGMENTASYONU (K-Means)
+# 6. MÜŞTERİ SEGMENTASYONU (K-Means)
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
 X_scaled_seg = scaler_seg.fit_transform(df[features_seg])
 
+# Elbow grafiği
 inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled_seg).inertia_ for k in range(2,8)]
 fig_elbow, ax = plt.subplots(figsize=(6,4))
 ax.plot(range(2,8), inertia, marker='o')
@@ -256,19 +242,19 @@ seg_summary['segment_name'] = seg_summary.apply(assign_segment_name, axis=1)
 seg_name_map = dict(zip(seg_summary['segment'], seg_summary['segment_name']))
 df['segment_name'] = df['segment'].map(seg_name_map)
 
-# PCA 3B
+# PCA 3B görselleştirme
 pca_3d = PCA(n_components=3)
 pca_result_3d = pca_3d.fit_transform(X_scaled_seg)
 df['pca1'], df['pca2'], df['pca3'] = pca_result_3d[:,0], pca_result_3d[:,1], pca_result_3d[:,2]
 fig_3d = px.scatter_3d(df, x='pca1', y='pca2', z='pca3', color='segment_name',
-                       title='Segmentler (3B PCA)',
+                       title='Segmentler (3B PCA Projeksiyonu)',
                        color_discrete_sequence=px.colors.qualitative.Set2,
                        hover_data=['customer_id', 'monetary_total', 'recency_days'])
 fig_3d.update_layout(width=800, height=600)
 st.plotly_chart(fig_3d, use_container_width=True)
 
 # ------------------------------
-# 9. NEXT CATEGORY MODELİ
+# 7. NEXT CATEGORY MODELİ
 # ------------------------------
 X_cat = pd.concat([X, age_dummies], axis=1)
 y_cat = cat_encoder.transform(df['next_category'])
@@ -281,10 +267,11 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 10. STREAMLIT ARABİRİMİ (Müşteri seçimi ve tüm tahminler)
+# 8. STREAMLIT ARABİRİMİ
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
+
 customer_ids = df['customer_id'].tolist()
 selected_id = st.selectbox("Bir müşteri ID seçin:", customer_ids)
 cust = df[df['customer_id'] == selected_id].iloc[0]
@@ -294,15 +281,14 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("📋 Müşteri Profili")
     st.metric("Segment", cust['segment_name'])
-    st.metric("Next Purchase Olasılığı (30 gün)", f"{cust['next_purchase_prob']:.0%}")
-    st.metric("Tahmini Bekleme Süresi (gün)", f"{cust['predicted_wait_days']} gün")
+    st.metric("Next Purchase Olasılığı", f"{cust['next_purchase_prob']:.0%}")
     st.metric("Son Alışveriş (gün)", f"{cust['recency_days']} gün")
     st.metric("Toplam Harcama (TL)", f"{cust['monetary_total']:,.0f}")
     st.metric("Wishlist Adedi", cust['wishlist_count'])
     st.metric("İndirim Duyarlılığı", f"{cust['discount_sensitivity']:.0%}")
     st.metric("Tahmini Yaş Aralığı", cust['pred_age_group'])
-    st.metric("Evli Olma Olasılığı", f"{cust['prob_married']:.0%}")
-    st.metric("Çocuk Sahibi Olma Olasılığı", f"{cust['prob_child']:.0%}")
+    st.metric("Evli Olma Olasılığı (Tahmini)", f"{cust['prob_married']:.0%}")
+    st.metric("Çocuk Sahibi Olma Olasılığı (Tahmini)", f"{cust['prob_child']:.0%}")
     st.caption(f"Not: Gerçek yaş grubu: {ground_truth['age_group'][idx]}, "
                f"Gerçek medeni durum: {ground_truth['marital_status'][idx]}, "
                f"Gerçek çocuk: {'Evet' if ground_truth['has_children'][idx] else 'Hayır'}")
@@ -311,18 +297,17 @@ with col2:
     st.subheader("🎯 Kişisel Öneriler")
     predicted_cat = cust['predicted_category']
     pred_proba = cust['predicted_category_proba']
-    st.info(f"📂 **Bir Sonraki Kategori Tahmini:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
+    st.info(f"📂 **Tahmin Edilen Bir Sonraki Kategori:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
     
     last_cat = cust['past_categories'][-1]
     if last_cat in transition_matrix.index:
         trans_probs = transition_matrix.loc[last_cat].sort_values(ascending=False)
-        st.markdown("🔄 **Kategori Geçiş Olasılıkları (son kategoriye göre):**")
+        st.markdown("🔄 **Kategori Geçiş Olasılıkları (son kategori bazlı):**")
         for cat, prob in trans_probs.head(3).items():
             st.write(f"- {last_cat} → {cat}: %{prob*100:.0f}")
     else:
         st.write("Geçiş bilgisi yetersiz.")
     
-    # Mevsimsel ürün önerisi
     month_season = {1:'Kış',2:'Kış',3:'İlkbahar',4:'İlkbahar',5:'İlkbahar',6:'Yaz',
                     7:'Yaz',8:'Yaz',9:'Sonbahar',10:'Sonbahar',11:'Sonbahar',12:'Kış'}
     season = month_season[cust['preferred_month']]
@@ -349,23 +334,21 @@ with col2:
         disc_str = "Sepette %10 indirim teklifi"
     else:
         disc_str = "Özel koleksiyon tanıtımı, indirim yok"
-    st.markdown(f"🏷️ **İndirim Stratejisi:** {discount_str}")
+    st.markdown(f"🏷️ **İndirim Stratejisi:** {disc_str}")
 
 # ------------------------------
-# 11. PERFORMANS ÖZETİ
+# 9. PERFORMANS ÖZETİ
 # ------------------------------
 st.markdown("---")
 st.header("📊 Model Performans Özeti")
-col_met1, col_met2, col_met3, col_met4 = st.columns(4)
+col_met1, col_met2, col_met3 = st.columns(3)
 with col_met1:
-    st.metric("Yaş Aralığı Doğruluğu", f"{age_acc:.2%}")
+    st.metric("Yaş Aralığı Tahmin Doğruluğu", f"{age_acc:.2%}")
 with col_met2:
-    st.metric("Evli Olma Doğruluğu", f"{marital_acc:.2%}")
+    st.metric("Evli Olma Tahmin Doğruluğu", f"{marital_acc:.2%}")
 with col_met3:
-    st.metric("Çocuk Sahibi Doğruluğu", f"{child_acc:.2%}")
-with col_met4:
-    st.metric("Bekleme Süresi RMSE (gün)", f"{wait_rmse:.1f}")
+    st.metric("Çocuk Sahibi Olma Doğruluğu", f"{child_acc:.2%}")
 st.metric("Next Purchase ROC AUC (CV)", f"{auc_mean:.3f}")
 st.metric("Next Category Doğruluğu", f"{cat_accuracy:.2%}")
 
-st.success("✅ Prototip, son alışveriş kategorileri, bekleme süresi, yaş aralığı, evlilik ve çocuk sahibi olma olasılıklarını tahmin eder.")
+st.success("✅ Prototip başarıyla çalışıyor. Yaş aralığı, evlilik ve çocuk sahibi olma olasılıkları tahmin edilmektedir.")
