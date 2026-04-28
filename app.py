@@ -16,9 +16,9 @@ warnings.filterwarnings('ignore')
 # ------------------------------
 # SAYFA YAPILANDIRMASI
 # ------------------------------
-st.set_page_config(page_title="Müşteri 360° - Yaşsız Segmentasyon & Tahmin", layout="wide")
-st.title("🛍️ E-ticaret Müşteri Analitik Prototipi (Yaş Bilgisi Yok)")
-st.markdown("Ralph Lauren 4D Modeli esinlidir. Veri setinde yaş (age) bulunmaz. Yaş aralığı, medeni durum ve çocuk sahibi olma olasılıkları alışveriş kategorileri ve davranışsal verilerle tahmin edilir.")
+st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout="wide")
+st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
+st.markdown("Ralph Lauren 4D Modeli esinlidir. Müşterinin yaş aralığı, medeni durum ve çocuk sahibi olma olasılıkları alışveriş kategorileri ve davranışsal verilerle tahmin edilir.")
 
 # ------------------------------
 # 1. VERİ OLUŞTURMA (YAŞ SÜTUNU YOK)
@@ -42,9 +42,7 @@ def generate_data():
     discount_sensitivity = np.random.beta(2,5, size=n)
     avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
 
-    # Gerçek yaş grubu (ground truth) – bunu sadece model eğitimi için kullanacağız, veri setine eklemeyeceğiz.
-    # Ancak yaş grubu etiketlerini oluşturmak için bir gerçek yaş simülasyonu yapıp onu kategoriye çevireceğiz.
-    # Bu gerçek yaş (age) değişkeni nihai DataFrame'e eklenmeyecek, sadece eğitim hedefi olacak.
+    # Gerçek yaş grubu (ground truth) – sadece eğitim için
     age_true = np.random.normal(35,10, size=n).astype(int).clip(18,70)
     def age_to_group(a):
         if a <= 25: return '18-25'
@@ -53,7 +51,7 @@ def generate_data():
         else: return '46+'
     age_group_true = [age_to_group(a) for a in age_true]
 
-    # Alışveriş kategorileri (yaş grubuna göre simüle edilir, ancak model yaş grubunu bilmez, sadece kategorilerden öğrenir)
+    # Alışveriş kategorileri (yaş grubuna göre simüle edilir)
     categories = ['Kadın', 'Erkek', 'Çocuk', 'Bebek', 'Home']
     cat_encoder = LabelEncoder()
     cat_encoder.fit(categories)
@@ -70,20 +68,13 @@ def generate_data():
             probs = [0.25, 0.30, 0.20, 0.10, 0.15]
         if discount_sensitivity[i] > 0.7:
             probs = [0.15, 0.20, 0.25, 0.25, 0.15]
-        # Yaş grubu etkisi (gerçekte yaş bilgisi yok, ama veri üretimi bunu kullanır)
-        if age_true[i] < 30:
-            probs = [0.35, 0.40, 0.15, 0.05, 0.05]
-        elif age_true[i] > 50:
-            probs = [0.10, 0.15, 0.20, 0.25, 0.30]
-        else:
-            probs = [0.25, 0.30, 0.20, 0.10, 0.15]
         probs = np.array(probs) / np.sum(probs)
         past = np.random.choice(categories, size=5, p=probs).tolist()
         past_categories.append(past)
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
-    # Hedef değişken: next_purchase_30d (yaş bilgisi olmadan da recency vb. ile oluşturulabilir)
+    # Hedef değişken: next_purchase_30d
     recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
     recency_effect = np.clip(recency_effect, 0.2, 0.9)
     log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
@@ -91,8 +82,7 @@ def generate_data():
     prob_next = 1/(1+np.exp(-log_odds))
     next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
 
-    # Medeni durum ve çocuk sahibi olma (ground truth) - sadece model eğitimi için, veri setine konmaz.
-    # Bunlar da yaş grubuna göre simüle edilir.
+    # Medeni durum ve çocuk sahibi olma (ground truth)
     marital_status_true = []
     has_children_true = []
     for a in age_true:
@@ -114,7 +104,7 @@ def generate_data():
         child_prob = np.clip(child_prob + np.random.normal(0,0.05), 0.05, 0.95)
         has_children_true.append(np.random.choice([0,1], p=[1-child_prob, child_prob]))
     
-    # DataFrame (age, marital_status, has_children yok – sadece eğitim için ayrıda tutuyoruz)
+    # DataFrame (yaş sütunu yok)
     df = pd.DataFrame({
         'customer_id': customer_id,
         'recency_days': recency_days,
@@ -130,7 +120,6 @@ def generate_data():
         'past_categories': past_categories,
         'next_category': next_category
     })
-    # Ground truth etiketleri ayrı bir struct olarak döndürüyoruz (eğitim için)
     ground_truth = {
         'age_group': age_group_true,
         'marital_status': marital_status_true,
@@ -142,9 +131,8 @@ df, cat_encoder, categories, ground_truth = generate_data()
 n = len(df)
 
 # ------------------------------
-# 2. ÖZELLİK MÜHENDİSLİĞİ (KATEGORİLERDEN YAŞ GRUBU TAHMİNİ İÇİN)
+# 2. ÖZELLİK MÜHENDİSLİĞİ
 # ------------------------------
-# Son 3 alışveriş kategorisi bilgilerini çıkar
 def extract_last3_cat_features(row):
     past = row['past_categories']
     last3 = past[-3:] if len(past)>=3 else past + ['']*(3-len(past))
@@ -154,43 +142,36 @@ def extract_last3_cat_features(row):
 last3_cat_df = df.apply(extract_last3_cat_features, axis=1)
 last3_cat_df.columns = [f'last3_{c}' for c in categories]
 
-# Diğer sayısal özellikler
 other_features = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits',
                   'wishlist_count', 'preferred_channel', 'preferred_month', 'avg_discount_used']
 X_base = df[other_features].copy()
 X = pd.concat([X_base, last3_cat_df], axis=1)
 
-# Hedef: age_group (kategorik)
+# Yaş grubu tahmini (Random Forest)
 age_groups = ['18-25', '26-35', '36-45', '46+']
 age_encoder = LabelEncoder()
 age_encoder.fit(age_groups)
 y_age = age_encoder.transform(ground_truth['age_group'])
-
-# Train-test ayır (age grubu modeli için)
 X_train_age, X_test_age, y_train_age, y_test_age = train_test_split(X, y_age, test_size=0.2, random_state=42, stratify=y_age)
-
-# Random Forest sınıflandırıcı ile yaş grubu tahmini
 rf_age = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 rf_age.fit(X_train_age, y_train_age)
 age_acc = rf_age.score(X_test_age, y_test_age)
-# Tüm veri üzerinde tahmin yap
 df['pred_age_group'] = age_encoder.inverse_transform(rf_age.predict(X))
 
-# ------------------------------
-# 3. MEDENİ DURUM VE ÇOCUK SAHİBİ OLMA MODELLERİ (Lojistik Regresyon)
-#    Girdi: pred_age_group (one-hot) + diğer özellikler + kategori bilgileri
-# ------------------------------
-# Pred_age_group'u one-hot encode et
+# Yaş grubu one-hot encoding ve DataFrame'e ekleme
 age_dummies = pd.get_dummies(df['pred_age_group'], prefix='age')
+df = pd.concat([df, age_dummies], axis=1)   # <--- DÜZELTİLDİ: age_dummies artık df'de
+
+# ------------------------------
+# 3. MEDENİ DURUM VE ÇOCUK MODELLERİ
+# ------------------------------
 X_marital = pd.concat([X, age_dummies], axis=1)
 y_marital = np.array([1 if m == 'Evli' else 0 for m in ground_truth['marital_status']])
 y_child = np.array(ground_truth['has_children'])
 
-# Train-test ayır (medeni durum ve çocuk modelleri için)
 X_train_m, X_test_m, y_train_m, y_test_m = train_test_split(X_marital, y_marital, test_size=0.2, random_state=42, stratify=y_marital)
 X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X_marital, y_child, test_size=0.2, random_state=42, stratify=y_child)
 
-# Lojistik Regresyon (ölçeklendirme ile)
 scaler_marital = StandardScaler()
 X_train_m_scaled = scaler_marital.fit_transform(X_train_m)
 X_test_m_scaled = scaler_marital.transform(X_test_m)
@@ -205,14 +186,14 @@ model_child = LogisticRegression(random_state=42)
 model_child.fit(X_train_c_scaled, y_train_c)
 child_acc = model_child.score(X_test_c_scaled, y_test_c)
 
-# Tüm veri üzerinde olasılık tahminleri yap
+# Tüm veri için olasılıklar
 X_marital_scaled_all = scaler_marital.transform(X_marital)
 X_child_scaled_all = scaler_child.transform(X_marital)
 df['prob_married'] = model_marital.predict_proba(X_marital_scaled_all)[:, 1]
 df['prob_child'] = model_child.predict_proba(X_child_scaled_all)[:, 1]
 
 # ------------------------------
-# 4. KATEGORİ GEÇİŞ MATRİSİ VE DİĞER MODELLER (ÖNCEKİ GİBİ)
+# 4. KATEGORİ GEÇİŞ MATRİSİ
 # ------------------------------
 all_transitions = []
 for past in df['past_categories']:
@@ -221,9 +202,11 @@ for past in df['past_categories']:
 transition_df = pd.DataFrame(all_transitions, columns=['from', 'to'])
 transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], normalize='index')
 
-# Next purchase modeli (yaş grubu tahmini özellik olarak eklenebilir, ekleyelim)
+# ------------------------------
+# 5. NEXT PURCHASE MODELİ
+# ------------------------------
 feature_cols_np = other_features + [f'last3_{c}' for c in categories] + list(age_dummies.columns)
-X_np = df[feature_cols_np]
+X_np = df[feature_cols_np]   # Artık tüm sütunlar df'de olduğu için hata yok
 y_np = df['next_purchase_30d']
 rf_np = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 cv = StratifiedKFold(5, shuffle=True, random_state=42)
@@ -233,19 +216,11 @@ rf_np.fit(X_np, y_np)
 df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 
 # ------------------------------
-# 5. MÜŞTERİ SEGMENTASYONU (K-Means) - YAŞ GRUBU ÖZELLİĞİNİ KATMAYALIM, SADECE DAVRANIŞSAL
+# 6. MÜŞTERİ SEGMENTASYONU (K-Means)
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
 X_scaled_seg = scaler_seg.fit_transform(df[features_seg])
-inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled_seg).inertia_ for k in range(2,8)]
-fig_elbow, ax = plt.subplots(figsize=(6,4))
-ax.plot(range(2,8), inertia, marker='o')
-ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
-ax.set_xlabel('Küme Sayısı')
-ax.set_ylabel('Inertia')
-st.pyplot(fig_elbow, use_container_width=False)
-
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled_seg)
 seg_summary = df.groupby('segment').agg({'monetary_total':'mean', 'recency_days':'mean', 'frequency':'mean'}).reset_index()
@@ -274,11 +249,10 @@ fig_3d.update_layout(width=800, height=600)
 st.plotly_chart(fig_3d, use_container_width=True)
 
 # ------------------------------
-# 6. KATEGORİ TAHMİN MODELİ (Next Category) – Aynı özelliklerle
+# 7. NEXT CATEGORY MODELİ
 # ------------------------------
-# Hedef kategori (ground truth)
+X_cat = pd.concat([X, age_dummies], axis=1)
 y_cat = cat_encoder.transform(df['next_category'])
-X_cat = pd.concat([X, age_dummies], axis=1)  # yaş grubu tahminini de ekleyelim
 X_train_cat, X_test_cat, y_train_cat, y_test_cat = train_test_split(X_cat, y_cat, test_size=0.2, random_state=42, stratify=y_cat)
 rf_cat = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 rf_cat.fit(X_train_cat, y_train_cat)
@@ -288,7 +262,7 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 7. STREAMLIT ARABİRİMİ
+# 8. STREAMLIT ARABİRİMİ
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
@@ -296,7 +270,7 @@ st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
 customer_ids = df['customer_id'].tolist()
 selected_id = st.selectbox("Bir müşteri ID seçin:", customer_ids)
 cust = df[df['customer_id'] == selected_id].iloc[0]
-idx = cust.name  # indeks
+idx = cust.name
 
 st.subheader("📋 Müşteri Profili")
 col1, col2 = st.columns(2)
@@ -308,11 +282,9 @@ with col1:
     st.metric("Toplam Harcama (TL)", f"{cust['monetary_total']:,.0f}")
     st.metric("Wishlist Adedi", cust['wishlist_count'])
     st.metric("İndirim Duyarlılığı", f"{cust['discount_sensitivity']:.0%}")
-    # Yaş bilgisi yok ama tahmini yaş aralığı var
     st.metric("Tahmini Yaş Aralığı", cust['pred_age_group'])
     st.metric("Evli Olma Olasılığı (Tahmini)", f"{cust['prob_married']:.0%}")
     st.metric("Çocuk Sahibi Olma Olasılığı (Tahmini)", f"{cust['prob_child']:.0%}")
-    # Ground truth değerleri (eğitim amaçlı, sadece karşılaştırma)
     st.caption(f"Not: Gerçek yaş grubu: {ground_truth['age_group'][idx]}, "
                f"Gerçek medeni durum: {ground_truth['marital_status'][idx]}, "
                f"Gerçek çocuk: {'Evet' if ground_truth['has_children'][idx] else 'Hayır'}")
@@ -357,7 +329,7 @@ with col2:
     st.markdown(f"🏷️ **İndirim Stratejisi:** {disc_str}")
 
 # ------------------------------
-# 8. PERFORMANS ÖZETİ
+# 9. PERFORMANS ÖZETİ
 # ------------------------------
 st.markdown("---")
 st.header("📊 Model Performans Özeti")
@@ -371,4 +343,4 @@ with col_met3:
 st.metric("Next Purchase ROC AUC (CV)", f"{auc_mean:.3f}")
 st.metric("Next Category Doğruluğu", f"{cat_accuracy:.2%}")
 
-st.success("✅ Prototip, yaş bilgisi olmadan yaş aralığı, evlilik ve çocuk sahibi olma olasılıklarını tahmin eder.")
+st.success("✅ Prototip başarıyla çalışıyor. Yaş aralığı, evlilik ve çocuk sahibi olma olasılıkları tahmin edilmektedir.")
