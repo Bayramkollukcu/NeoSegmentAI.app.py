@@ -6,19 +6,16 @@ import seaborn as sns
 import plotly.express as px
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 import warnings
 warnings.filterwarnings('ignore')
 
-# ------------------------------
-# SAYFA YAPILANDIRMASI
-# ------------------------------
 st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout="wide")
 st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
-st.markdown("Ralph Lauren 4D Modeli esinlidir. Müşterinin yaş aralığı, medeni durum ve çocuk sahibi olma olasılıkları alışveriş kategorileri ve davranışsal verilerle tahmin edilir.")
+st.markdown("Ralph Lauren 4D Modeli esinlidir.")
 
 # ------------------------------
 # 1. VERİ OLUŞTURMA (YAŞ SÜTUNU YOK)
@@ -27,8 +24,6 @@ st.markdown("Ralph Lauren 4D Modeli esinlidir. Müşterinin yaş aralığı, med
 def generate_data():
     np.random.seed(42)
     n = 500
-
-    # Müşteri temel özellikleri (yaş yok)
     customer_id = np.arange(1, n+1)
     recency_days = np.random.exponential(scale=15, size=n).astype(int).clip(0,90)
     frequency = np.random.poisson(lam=8, size=n) + 1
@@ -42,7 +37,7 @@ def generate_data():
     discount_sensitivity = np.random.beta(2,5, size=n)
     avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
 
-    # Gerçek yaş grubu (ground truth) – sadece eğitim için
+    # Gerçek yaş grubu (ground truth, sadece eğitim için)
     age_true = np.random.normal(35,10, size=n).astype(int).clip(18,70)
     def age_to_group(a):
         if a <= 25: return '18-25'
@@ -51,14 +46,12 @@ def generate_data():
         else: return '46+'
     age_group_true = [age_to_group(a) for a in age_true]
 
-    # Alışveriş kategorileri (yaş grubuna göre simüle edilir)
     categories = ['Kadın', 'Erkek', 'Çocuk', 'Bebek', 'Home']
     cat_encoder = LabelEncoder()
     cat_encoder.fit(categories)
     
     past_categories = []
     next_category = []
-    
     for i in range(n):
         if age_true[i] < 30:
             probs = [0.35, 0.40, 0.15, 0.05, 0.05]
@@ -74,7 +67,6 @@ def generate_data():
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
-    # Hedef değişken: next_purchase_30d
     recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
     recency_effect = np.clip(recency_effect, 0.2, 0.9)
     log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
@@ -82,7 +74,6 @@ def generate_data():
     prob_next = 1/(1+np.exp(-log_odds))
     next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
 
-    # Medeni durum ve çocuk sahibi olma (ground truth)
     marital_status_true = []
     has_children_true = []
     for a in age_true:
@@ -104,7 +95,6 @@ def generate_data():
         child_prob = np.clip(child_prob + np.random.normal(0,0.05), 0.05, 0.95)
         has_children_true.append(np.random.choice([0,1], p=[1-child_prob, child_prob]))
     
-    # DataFrame (yaş sütunu yok)
     df = pd.DataFrame({
         'customer_id': customer_id,
         'recency_days': recency_days,
@@ -158,12 +148,12 @@ rf_age.fit(X_train_age, y_train_age)
 age_acc = rf_age.score(X_test_age, y_test_age)
 df['pred_age_group'] = age_encoder.inverse_transform(rf_age.predict(X))
 
-# Yaş grubu one-hot encoding ve DataFrame'e ekleme
+# Yaş grubu dummy değişkenleri
 age_dummies = pd.get_dummies(df['pred_age_group'], prefix='age')
-df = pd.concat([df, age_dummies], axis=1)   # <--- DÜZELTİLDİ: age_dummies artık df'de
+df = pd.concat([df, age_dummies], axis=1)
 
 # ------------------------------
-# 3. MEDENİ DURUM VE ÇOCUK MODELLERİ
+# 3. MEDENİ DURUM VE ÇOCUK SAHİBİ OLMA MODELLERİ (Lojistik Regresyon)
 # ------------------------------
 X_marital = pd.concat([X, age_dummies], axis=1)
 y_marital = np.array([1 if m == 'Evli' else 0 for m in ground_truth['marital_status']])
@@ -186,7 +176,6 @@ model_child = LogisticRegression(random_state=42)
 model_child.fit(X_train_c_scaled, y_train_c)
 child_acc = model_child.score(X_test_c_scaled, y_test_c)
 
-# Tüm veri için olasılıklar
 X_marital_scaled_all = scaler_marital.transform(X_marital)
 X_child_scaled_all = scaler_child.transform(X_marital)
 df['prob_married'] = model_marital.predict_proba(X_marital_scaled_all)[:, 1]
@@ -203,10 +192,12 @@ transition_df = pd.DataFrame(all_transitions, columns=['from', 'to'])
 transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], normalize='index')
 
 # ------------------------------
-# 5. NEXT PURCHASE MODELİ
+# 5. NEXT PURCHASE MODELİ (Random Forest)
 # ------------------------------
-feature_cols_np = other_features + [f'last3_{c}' for c in categories] + list(age_dummies.columns)
-X_np = df[feature_cols_np]   # Artık tüm sütunlar df'de olduğu için hata yok
+# Dinamik olarak age_ ile başlayan sütunları al
+age_cols = [col for col in df.columns if col.startswith('age_')]
+feature_cols_np = other_features + [f'last3_{c}' for c in categories] + age_cols
+X_np = df[feature_cols_np]
 y_np = df['next_purchase_30d']
 rf_np = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 cv = StratifiedKFold(5, shuffle=True, random_state=42)
@@ -221,6 +212,16 @@ df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
 X_scaled_seg = scaler_seg.fit_transform(df[features_seg])
+
+# Elbow grafiği
+inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled_seg).inertia_ for k in range(2,8)]
+fig_elbow, ax = plt.subplots(figsize=(6,4))
+ax.plot(range(2,8), inertia, marker='o')
+ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
+ax.set_xlabel('Küme Sayısı')
+ax.set_ylabel('Inertia')
+st.pyplot(fig_elbow, use_container_width=False)
+
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled_seg)
 seg_summary = df.groupby('segment').agg({'monetary_total':'mean', 'recency_days':'mean', 'frequency':'mean'}).reset_index()
@@ -272,10 +273,9 @@ selected_id = st.selectbox("Bir müşteri ID seçin:", customer_ids)
 cust = df[df['customer_id'] == selected_id].iloc[0]
 idx = cust.name
 
-st.subheader("📋 Müşteri Profili")
 col1, col2 = st.columns(2)
-
 with col1:
+    st.subheader("📋 Müşteri Profili")
     st.metric("Segment", cust['segment_name'])
     st.metric("Next Purchase Olasılığı", f"{cust['next_purchase_prob']:.0%}")
     st.metric("Son Alışveriş (gün)", f"{cust['recency_days']} gün")
@@ -294,6 +294,7 @@ with col2:
     predicted_cat = cust['predicted_category']
     pred_proba = cust['predicted_category_proba']
     st.info(f"📂 **Tahmin Edilen Bir Sonraki Kategori:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
+    
     last_cat = cust['past_categories'][-1]
     if last_cat in transition_matrix.index:
         trans_probs = transition_matrix.loc[last_cat].sort_values(ascending=False)
@@ -302,7 +303,7 @@ with col2:
             st.write(f"- {last_cat} → {cat}: %{prob*100:.0f}")
     else:
         st.write("Geçiş bilgisi yetersiz.")
-    # Mevsimsel ürün önerisi (kısaltılmış katalog)
+    
     month_season = {1:'Kış',2:'Kış',3:'İlkbahar',4:'İlkbahar',5:'İlkbahar',6:'Yaz',
                     7:'Yaz',8:'Yaz',9:'Sonbahar',10:'Sonbahar',11:'Sonbahar',12:'Kış'}
     season = month_season[cust['preferred_month']]
@@ -315,11 +316,14 @@ with col2:
     }
     rec_product = seasonal_products.get(predicted_cat, seasonal_products['Erkek']).get(season, ['Ürün'])[0]
     st.success(f"📦 **Önerilen Ürün:** {rec_product} ({season} mevsimine uygun)")
+    
     channel_map = {0:'Web sitesi',1:'Mobil App',2:'Mağaza'}
     st.success(f"📱 **Önerilen İletişim Kanalı:** {channel_map[cust['preferred_channel']]}")
+    
     month_names = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
     best_month = month_names[cust['preferred_month']-1]
     st.warning(f"⏰ **En Uygun Zaman (Ay):** {best_month}")
+    
     if cust['discount_sensitivity'] > 0.7:
         disc_str = "Yüksek indirim (%20 kupon) gönder"
     elif cust['discount_sensitivity'] > 0.4:
