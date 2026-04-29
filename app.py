@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="Müşteri 360° Analitik", layout="wide")
 st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
-st.markdown("Ralph Lauren 4D Modeli esinlidir. Coğrafi bilgiler (bölge, şehir, ilçe) de tahminlerde kullanılır.")
+st.markdown("Ralph Lauren 4D Modeli esinlidir. Gerçek coğrafi veriler (bölge/şehir/ilçe) kullanılır. İndirim duyarlılığı, kullanılan ortalama indirimden türetilmiştir.")
 
 # ------------------------------
 # 0. TÜRKİYE BÖLGE, ŞEHİR VE İLÇE TANIMLARI
@@ -29,7 +29,6 @@ region_cities = {
     'Doğu Anadolu': ['Erzurum', 'Van', 'Malatya'],
     'Güneydoğu Anadolu': ['Gaziantep', 'Diyarbakır', 'Şanlıurfa']
 }
-# Her şehir için örnek ilçeler (ilçe adı rastgele seçilecek)
 city_districts = {
     'İstanbul': ['Kadıköy', 'Beşiktaş', 'Şişli', 'Ümraniye', 'Bakırköy'],
     'Bursa': ['Osmangazi', 'Nilüfer', 'Yıldırım', 'Mudanya'],
@@ -53,13 +52,11 @@ city_districts = {
     'Diyarbakır': ['Kayapınar', 'Bağlar', 'Yenişehir', 'Sur'],
     'Şanlıurfa': ['Eyyübiye', 'Haliliye', 'Karaköprü', 'Siverek']
 }
-# Tüm şehirler listesi
 all_cities = [city for cities in region_cities.values() for city in cities]
-# Bölge listesi
 all_regions = list(region_cities.keys())
 
 # ------------------------------
-# 1. VERİ OLUŞTURMA (SENTETİK, COĞRAFİ BİLGİLER EKLENDİ)
+# 1. VERİ OLUŞTURMA (SENTETİK, COĞRAFİ + İNDİRİM DUYARLILIĞI DÜZELTİLDİ)
 # ------------------------------
 @st.cache_data
 def generate_data():
@@ -75,10 +72,13 @@ def generate_data():
     preferred_channel = np.random.choice([0,1,2], size=n, p=[0.5,0.4,0.1])
     month_probs = [0.06,0.06,0.07,0.08,0.09,0.12,0.13,0.12,0.09,0.07,0.06,0.05]
     preferred_month = np.random.choice(range(1,13), size=n, p=month_probs)
-    discount_sensitivity = np.random.beta(2,5, size=n)
-    avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
+    
+    # avg_discount_used rastgele üret, discount_sensitivity'i bundan türet
+    avg_discount_used = np.random.exponential(scale=12, size=n).astype(int).clip(0,50)
+    discount_sensitivity = (avg_discount_used / 50) + np.random.normal(0, 0.05, size=n)
+    discount_sensitivity = np.clip(discount_sensitivity, 0, 1)
 
-    # Gerçek cinsiyet, yaş, yaş grubu, medeni durum, çocuk (ground truth)
+    # Ground truth (gerçek) cinsiyet, yaş vb.
     gender_true = np.random.choice(['Kadın', 'Erkek'], size=n, p=[0.5, 0.5])
     age_true = np.random.normal(35,10, size=n).astype(int).clip(18,70)
     def age_to_group(a):
@@ -88,8 +88,8 @@ def generate_data():
         else: return '46+'
     age_group_true = [age_to_group(a) for a in age_true]
 
-    # Coğrafi bilgiler (rastgele bölge, şehir, ilçe)
-    region_weights = [0.25, 0.15, 0.15, 0.2, 0.1, 0.05, 0.1]  # Marmara daha ağırlıklı
+    # Coğrafi bilgiler (bölge, şehir, ilçe)
+    region_weights = [0.25, 0.15, 0.15, 0.2, 0.1, 0.05, 0.1]
     region_list = np.random.choice(all_regions, size=n, p=region_weights)
     city_list = []
     district_list = []
@@ -99,7 +99,7 @@ def generate_data():
         district = np.random.choice(city_districts.get(city, ['Merkez']))
         district_list.append(district)
 
-    # Kategoriler (cinsiyet, yaş, coğrafya etkisiyle)
+    # Kategoriler (alışveriş kategorileri)
     categories = ['Kadın', 'Erkek', 'Çocuk', 'Bebek', 'Home']
     cat_encoder = LabelEncoder()
     cat_encoder.fit(categories)
@@ -107,19 +107,16 @@ def generate_data():
     past_categories = []
     next_category = []
     for i in range(n):
-        # Cinsiyet bazlı
         if gender_true[i] == 'Kadın':
             base_probs = [0.45, 0.25, 0.15, 0.05, 0.10]
         else:
             base_probs = [0.25, 0.45, 0.15, 0.05, 0.10]
-        # Yaş bazlı
         if age_true[i] < 30:
             age_probs = [0.35, 0.40, 0.15, 0.05, 0.05]
         elif age_true[i] > 50:
             age_probs = [0.10, 0.15, 0.20, 0.25, 0.30]
         else:
             age_probs = [0.25, 0.30, 0.20, 0.10, 0.15]
-        # Coğrafi etki: Örneğin Ege'de kadın giyim daha popüler, İç Anadolu'da home, Karadeniz'de erkek giyim
         geo_effect = [1.0, 1.0, 1.0, 1.0, 1.0]
         reg = region_list[i]
         if reg == 'Ege':
@@ -128,7 +125,6 @@ def generate_data():
             geo_effect[4] = 1.4  # Home
         elif reg == 'Karadeniz':
             geo_effect[1] = 1.3  # Erkek
-        # Kombine
         probs = (np.array(base_probs) + np.array(age_probs)) / 2
         probs = probs * np.array(geo_effect)
         if discount_sensitivity[i] > 0.7:
@@ -139,7 +135,7 @@ def generate_data():
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
-    # Next purchase 30d
+    # Next purchase 30d (binary)
     recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
     recency_effect = np.clip(recency_effect, 0.2, 0.9)
     log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
@@ -147,9 +143,11 @@ def generate_data():
     prob_next = 1/(1+np.exp(-log_odds))
     next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
 
+    # Bekleme süresi (gün cinsinden ground truth)
     wait_days_true = np.random.poisson(lam=25, size=n) + (recency_days * 0.3).astype(int)
     wait_days_true = np.clip(wait_days_true, 1, 90)
 
+    # Medeni durum ve çocuk sahibi olma (ground truth)
     marital_status_true = []
     has_children_true = []
     for a in age_true:
@@ -202,7 +200,7 @@ df, cat_encoder, categories, ground_truth = generate_data()
 n = len(df)
 
 # ------------------------------
-# 2. ÖZELLİK MÜHENDİSLİĞİ (SON 3 KATEGORİ)
+# 2. ÖZELLİK MÜHENDİSLİĞİ (SON 3 KATEGORİ + COĞRAFİ ENCODE)
 # ------------------------------
 def extract_last3_cat_features(row):
     past = row['past_categories']
@@ -218,7 +216,7 @@ other_features = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_v
 X_base = df[other_features].copy()
 X = pd.concat([X_base, last3_cat_df], axis=1)
 
-# Coğrafi değişkenleri encode et (LabelEncoder)
+# Coğrafi değişkenleri sayısal hale getir
 city_encoder = LabelEncoder()
 region_encoder = LabelEncoder()
 district_encoder = LabelEncoder()
@@ -226,7 +224,6 @@ df['city_code'] = city_encoder.fit_transform(df['city'])
 df['region_code'] = region_encoder.fit_transform(df['region'])
 df['district_code'] = district_encoder.fit_transform(df['district'])
 
-# Coğrafi özellikleri X'e ekle
 geo_features = ['city_code', 'region_code', 'district_code']
 X_geo = df[geo_features].copy()
 X = pd.concat([X, X_geo], axis=1)
@@ -244,14 +241,14 @@ rf_age.fit(X_train_age, y_train_age)
 age_acc = rf_age.score(X_test_age, y_test_age)
 df['pred_age_group'] = age_encoder.inverse_transform(rf_age.predict(X))
 
-# Yaş grubu dummy oluştur (modeller için)
+# Yaş grubu dummy değişkenleri
 age_dummies = pd.get_dummies(df['pred_age_group'], prefix='age')
 df = pd.concat([df, age_dummies], axis=1)
 
 # ------------------------------
-# 4. CİNSİYET TAHMİNİ
+# 4. CİNSİYET TAHMİNİ (Lojistik Regresyon)
 # ------------------------------
-X_gender = X.copy()  # coğrafya zaten içinde
+X_gender = X.copy()
 y_gender = (ground_truth['gender'] == 'Kadın').astype(int)
 X_train_g, X_test_g, y_train_g, y_test_g = train_test_split(X_gender, y_gender, test_size=0.2, random_state=42, stratify=y_gender)
 scaler_gender = StandardScaler()
@@ -264,7 +261,7 @@ X_gender_scaled_all = scaler_gender.transform(X_gender)
 df['prob_female'] = model_gender.predict_proba(X_gender_scaled_all)[:, 1]
 
 # ------------------------------
-# 5. BEKLEME SÜRESİ TAHMİNİ
+# 5. BEKLEME SÜRESİ (Random Forest Regresyon)
 # ------------------------------
 X_wait = X.copy()
 y_wait = df['wait_days_true']
@@ -275,7 +272,7 @@ wait_rmse = np.sqrt(np.mean((rf_wait.predict(X_test_wait) - y_test_wait)**2))
 df['predicted_wait_days'] = rf_wait.predict(X_wait).astype(int)
 
 # ------------------------------
-# 6. MEDENİ DURUM VE ÇOCUK
+# 6. MEDENİ DURUM VE ÇOCUK (Lojistik Regresyon)
 # ------------------------------
 X_marital = X.copy()
 y_marital = np.array([1 if m == 'Evli' else 0 for m in ground_truth['marital_status']])
@@ -310,9 +307,8 @@ transition_df = pd.DataFrame(all_transitions, columns=['from', 'to'])
 transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], normalize='index')
 
 # ------------------------------
-# 8. NEXT PURCHASE MODELİ
+# 8. NEXT PURCHASE MODELİ (Random Forest, CV)
 # ------------------------------
-# Özellikler: coğrafi kodlar dahil tüm X sütunları
 X_np = X.copy()
 y_np = df['next_purchase_30d']
 rf_np = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
@@ -323,7 +319,7 @@ rf_np.fit(X_np, y_np)
 df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 
 # ------------------------------
-# 9. SEGMENTASYON (K-Means) - Coğrafi bilgileri dahil etmiyoruz (sadece davranışsal)
+# 9. MÜŞTERİ SEGMENTASYONU (K-Means, davranışsal verilerle)
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
@@ -344,19 +340,19 @@ seg_summary['segment_name'] = seg_summary.apply(assign_segment_name, axis=1)
 seg_name_map = dict(zip(seg_summary['segment'], seg_summary['segment_name']))
 df['segment_name'] = df['segment'].map(seg_name_map)
 
-# PCA 3B
+# PCA 3B görselleştirme
 pca_3d = PCA(n_components=3)
 pca_result_3d = pca_3d.fit_transform(X_scaled_seg)
 df['pca1'], df['pca2'], df['pca3'] = pca_result_3d[:,0], pca_result_3d[:,1], pca_result_3d[:,2]
 fig_3d = px.scatter_3d(df, x='pca1', y='pca2', z='pca3', color='segment_name',
-                       title='Segmentler (3B PCA)',
+                       title='Segmentler (3B PCA Projeksiyonu)',
                        color_discrete_sequence=px.colors.qualitative.Set2,
                        hover_data=['customer_id', 'monetary_total', 'recency_days'])
 fig_3d.update_layout(width=800, height=600)
 st.plotly_chart(fig_3d, use_container_width=True)
 
 # ------------------------------
-# 10. NEXT CATEGORY MODELİ
+# 10. NEXT CATEGORY MODELİ (Random Forest)
 # ------------------------------
 X_cat = X.copy()
 y_cat = cat_encoder.transform(df['next_category'])
@@ -369,7 +365,7 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 11. STREAMLIT ARABİRİMİ (Müşteri seçimi, coğrafi bilgiler gösteriliyor)
+# 11. STREAMLIT ARABİRİMİ
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
@@ -464,4 +460,4 @@ with col_met5:
 st.metric("Next Purchase ROC AUC (CV)", f"{auc_mean:.3f}")
 st.metric("Next Category Doğruluğu", f"{cat_accuracy:.2%}")
 
-st.success("✅ Prototip, cinsiyet, yaş, medeni durum, çocuk, bekleme süresi, next purchase, next category ve coğrafi (bölge/şehir/ilçe) bilgilerini kullanarak tahmin yapmaktadır.")
+st.success("✅ Prototip, güncel indirim duyarlılığı türetimi ve coğrafi bilgilerle çalışmaktadır.")
