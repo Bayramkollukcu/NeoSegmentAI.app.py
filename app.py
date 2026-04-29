@@ -319,7 +319,8 @@ rf_np.fit(X_np, y_np)
 df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 
 # ------------------------------
-# 9. MÜŞTERİ SEGMENTASYONU (K-Means, davranışsal verilerle)
+# ------------------------------
+# 9. MÜŞTERİ SEGMENTASYONU (K-Means, davranışsal verilerle) - 4 net segment
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
@@ -336,30 +337,22 @@ st.pyplot(fig_elbow, use_container_width=False)
 
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled_seg)
-seg_summary = df.groupby('segment').agg({'monetary_total':'mean', 'recency_days':'mean', 'frequency':'mean'}).reset_index()
-def assign_segment_name(row):
-    if row['monetary_total'] > 5000 and row['recency_days'] < 30:
-        return 'Premium Sadık'
-    elif row['monetary_total'] > 2000 and row['recency_days'] < 60:
-        return 'Aktif Orta Sınıf'
-    elif row['monetary_total'] < 2000 and row['recency_days'] < 30:
-        return 'Düşük Değerli Yeni'
-    else:
-        return 'Riskli / Uyuyan'
-seg_summary['segment_name'] = seg_summary.apply(assign_segment_name, axis=1)
-seg_name_map = dict(zip(seg_summary['segment'], seg_summary['segment_name']))
-df['segment_name'] = df['segment'].map(seg_name_map)
 
-# PCA 3B görselleştirme
-pca_3d = PCA(n_components=3)
-pca_result_3d = pca_3d.fit_transform(X_scaled_seg)
-df['pca1'], df['pca2'], df['pca3'] = pca_result_3d[:,0], pca_result_3d[:,1], pca_result_3d[:,2]
-fig_3d = px.scatter_3d(df, x='pca1', y='pca2', z='pca3', color='segment_name',
-                       title='Segmentler (3B PCA Projeksiyonu)',
-                       color_discrete_sequence=px.colors.qualitative.Set2,
-                       hover_data=['customer_id', 'monetary_total', 'recency_days'])
-fig_3d.update_layout(width=800, height=600)
-st.plotly_chart(fig_3d, use_container_width=True)
+# Kümelerin merkezlerini al (ölçeklendirilmemiş orijinal değerler üzerinden)
+cluster_centers = df.groupby('segment')[features_seg].mean()
+
+# Merkezleri monetary_total (büyükten küçüğe) ve recency_days (küçükten büyüğe) sırala
+# Önce monetary_total yüksek olanlar daha değerli. Aynı monetary grubunda recency düşük olan daha aktif.
+cluster_centers['score'] = cluster_centers['monetary_total'] / 1000 - cluster_centers['recency_days'] / 100
+cluster_centers = cluster_centers.sort_values('score', ascending=False)
+
+# İsimlendirme (en yüksek skordan en düşüğe)
+names = ['Premium Sadık', 'Aktif Orta Sınıf', 'Düşük Değerli Yeni', 'Riskli / Uyuyan']
+seg_name_map = {}
+for i, seg in enumerate(cluster_centers.index):
+    seg_name_map[seg] = names[i]
+
+df['segment_name'] = df['segment'].map(seg_name_map)
 
 # ------------------------------
 # 10. NEXT CATEGORY MODELİ (Random Forest)
