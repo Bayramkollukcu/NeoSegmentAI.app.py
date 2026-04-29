@@ -324,6 +324,16 @@ df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
 X_scaled_seg = scaler_seg.fit_transform(df[features_seg])
+
+# Elbow grafiği (küçük boyutta)
+inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled_seg).inertia_ for k in range(2,8)]
+fig_elbow, ax = plt.subplots(figsize=(4,3))
+ax.plot(range(2,8), inertia, marker='o')
+ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
+ax.set_xlabel('Küme Sayısı')
+ax.set_ylabel('Inertia')
+st.pyplot(fig_elbow, use_container_width=False)
+
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled_seg)
 seg_summary = df.groupby('segment').agg({'monetary_total':'mean', 'recency_days':'mean', 'frequency':'mean'}).reset_index()
@@ -365,7 +375,7 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 11. STREAMLIT ARABİRİMİ
+# 11. STREAMLIT ARABİRİMİ (Müşteri seçimi, kompakt profil düzeni)
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
@@ -374,28 +384,34 @@ selected_id = st.selectbox("Bir müşteri ID seçin:", customer_ids)
 cust = df[df['customer_id'] == selected_id].iloc[0]
 idx = cust.name
 
-col1, col2 = st.columns(2)
+col1, col2 = st.columns([1.2, 1])
 with col1:
     st.subheader("📋 Müşteri Profili")
-    st.metric("Segment", cust['segment_name'])
-    st.metric("Next Purchase Olasılığı (30 gün)", f"{cust['next_purchase_prob']:.0%}")
-    st.metric("Tahmini Bekleme Süresi (gün)", f"{cust['predicted_wait_days']} gün")
-    st.metric("Son Alışveriş (gün)", f"{cust['recency_days']} gün")
-    st.metric("Toplam Harcama (TL)", f"{cust['monetary_total']:,.0f}")
-    st.metric("Wishlist Adedi", cust['wishlist_count'])
-    st.metric("İndirim Duyarlılığı", f"{cust['discount_sensitivity']:.0%}")
-    st.metric("Tahmini Yaş Aralığı", cust['pred_age_group'])
-    st.metric("Kadın Olma Olasılığı", f"{cust['prob_female']:.0%}")
-    st.metric("Erkek Olma Olasılığı", f"{1-cust['prob_female']:.0%}")
-    st.metric("Evli Olma Olasılığı", f"{cust['prob_married']:.0%}")
-    st.metric("Çocuk Sahibi Olma Olasılığı", f"{cust['prob_child']:.0%}")
-    st.metric("Bölge", cust['region'])
-    st.metric("Şehir", cust['city'])
-    st.metric("İlçe", cust['district'])
-    st.caption(f"Not: Gerçek cinsiyet: {ground_truth['gender'][idx]}, "
-               f"Gerçek yaş grubu: {ground_truth['age_group'][idx]}, "
-               f"Gerçek medeni durum: {ground_truth['marital_status'][idx]}, "
-               f"Gerçek çocuk: {'Evet' if ground_truth['has_children'][idx] else 'Hayır'}")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Segment", cust['segment_name'])
+        st.metric("Son Alışveriş", f"{cust['recency_days']} gün")
+        st.metric("Toplam Harcama", f"₺{cust['monetary_total']:,.0f}")
+        st.metric("İndirim Duyarlılığı", f"%{cust['discount_sensitivity']*100:.0f}")
+        st.metric("Kadın Olma Olasılığı", f"%{cust['prob_female']*100:.0f}")
+        st.metric("Evli Olma Olasılığı", f"%{cust['prob_married']*100:.0f}")
+    with c2:
+        st.metric("Next Purchase (30g)", f"%{cust['next_purchase_prob']*100:.0f}")
+        st.metric("Bekleme Süresi (tahmini)", f"{cust['predicted_wait_days']} gün")
+        st.metric("Wishlist Adedi", cust['wishlist_count'])
+        st.metric("Yaş Aralığı (tahmini)", cust['pred_age_group'])
+        st.metric("Erkek Olma Olasılığı", f"%{(1-cust['prob_female'])*100:.0f}")
+        st.metric("Çocuk Sahibi Olma", f"%{cust['prob_child']*100:.0f}")
+    with c3:
+        st.metric("Bölge", cust['region'])
+        st.metric("Şehir", cust['city'])
+        st.metric("İlçe", cust['district'])
+        st.markdown("---")
+        st.caption(f"**Gerçek bilgiler (doğrulama)**  \n"
+                   f"Cinsiyet: {ground_truth['gender'][idx]}  \n"
+                   f"Yaş grubu: {ground_truth['age_group'][idx]}  \n"
+                   f"Medeni durum: {ground_truth['marital_status'][idx]}  \n"
+                   f"Çocuk: {'Evet' if ground_truth['has_children'][idx] else 'Hayır'}")
 
 with col2:
     st.subheader("🎯 Kişisel Öneriler")
