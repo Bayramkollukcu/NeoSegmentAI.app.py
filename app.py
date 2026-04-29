@@ -6,19 +6,60 @@ import seaborn as sns
 import plotly.express as px
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Müşteri 360° - Segmentasyon & Tahmin", layout="wide")
+st.set_page_config(page_title="Müşteri 360° Analitik", layout="wide")
 st.title("🛍️ E-ticaret Müşteri Analitik Prototipi")
-st.markdown("Ralph Lauren 4D Modeli esinlidir.")
+st.markdown("Ralph Lauren 4D Modeli esinlidir. Coğrafi bilgiler (bölge, şehir, ilçe) de tahminlerde kullanılır.")
 
 # ------------------------------
-# 1. VERİ OLUŞTURMA (YAŞ SÜTUNU YOK)
+# 0. TÜRKİYE BÖLGE, ŞEHİR VE İLÇE TANIMLARI
+# ------------------------------
+region_cities = {
+    'Marmara': ['İstanbul', 'Bursa', 'Kocaeli'],
+    'Ege': ['İzmir', 'Manisa', 'Aydın'],
+    'Akdeniz': ['Antalya', 'Adana', 'Mersin'],
+    'İç Anadolu': ['Ankara', 'Konya', 'Kayseri'],
+    'Karadeniz': ['Samsun', 'Trabzon', 'Ordu'],
+    'Doğu Anadolu': ['Erzurum', 'Van', 'Malatya'],
+    'Güneydoğu Anadolu': ['Gaziantep', 'Diyarbakır', 'Şanlıurfa']
+}
+# Her şehir için örnek ilçeler (ilçe adı rastgele seçilecek)
+city_districts = {
+    'İstanbul': ['Kadıköy', 'Beşiktaş', 'Şişli', 'Ümraniye', 'Bakırköy'],
+    'Bursa': ['Osmangazi', 'Nilüfer', 'Yıldırım', 'Mudanya'],
+    'Kocaeli': ['İzmit', 'Gebze', 'Körfez', 'Darıca'],
+    'İzmir': ['Konak', 'Karşıyaka', 'Bornova', 'Buca', 'Çeşme'],
+    'Manisa': ['Yunusemre', 'Akhisar', 'Turgutlu', 'Salihli'],
+    'Aydın': ['Efeler', 'Kuşadası', 'Didim', 'Nazilli'],
+    'Antalya': ['Muratpaşa', 'Kepez', 'Alanya', 'Manavgat', 'Konyaaltı'],
+    'Adana': ['Seyhan', 'Yüreğir', 'Çukurova', 'Sarıçam'],
+    'Mersin': ['Akdeniz', 'Yenişehir', 'Tarsus', 'Erdemli'],
+    'Ankara': ['Çankaya', 'Keçiören', 'Etimesgut', 'Yenimahalle', 'Mamak'],
+    'Konya': ['Selçuklu', 'Meram', 'Karatay', 'Ereğli'],
+    'Kayseri': ['Melikgazi', 'Kocasinan', 'Talas', 'Develi'],
+    'Samsun': ['İlkadım', 'Atakum', 'Canik', 'Bafra'],
+    'Trabzon': ['Ortahisar', 'Akçaabat', 'Yomra', 'Araklı'],
+    'Ordu': ['Altınordu', 'Ünye', 'Fatsa', 'Perşembe'],
+    'Erzurum': ['Yakutiye', 'Palandöken', 'Aziziye', 'Oltu'],
+    'Van': ['İpekyolu', 'Tuşba', 'Edremit', 'Erciş'],
+    'Malatya': ['Battalgazi', 'Yeşilyurt', 'Doğanşehir', 'Akçadağ'],
+    'Gaziantep': ['Şahinbey', 'Şehitkamil', 'Oğuzeli', 'Nizip'],
+    'Diyarbakır': ['Kayapınar', 'Bağlar', 'Yenişehir', 'Sur'],
+    'Şanlıurfa': ['Eyyübiye', 'Haliliye', 'Karaköprü', 'Siverek']
+}
+# Tüm şehirler listesi
+all_cities = [city for cities in region_cities.values() for city in cities]
+# Bölge listesi
+all_regions = list(region_cities.keys())
+
+# ------------------------------
+# 1. VERİ OLUŞTURMA (SENTETİK, COĞRAFİ BİLGİLER EKLENDİ)
 # ------------------------------
 @st.cache_data
 def generate_data():
@@ -37,7 +78,8 @@ def generate_data():
     discount_sensitivity = np.random.beta(2,5, size=n)
     avg_discount_used = (discount_sensitivity*50).astype(int).clip(0,50)
 
-    # Gerçek yaş grubu (ground truth, sadece eğitim için)
+    # Gerçek cinsiyet, yaş, yaş grubu, medeni durum, çocuk (ground truth)
+    gender_true = np.random.choice(['Kadın', 'Erkek'], size=n, p=[0.5, 0.5])
     age_true = np.random.normal(35,10, size=n).astype(int).clip(18,70)
     def age_to_group(a):
         if a <= 25: return '18-25'
@@ -46,6 +88,18 @@ def generate_data():
         else: return '46+'
     age_group_true = [age_to_group(a) for a in age_true]
 
+    # Coğrafi bilgiler (rastgele bölge, şehir, ilçe)
+    region_weights = [0.25, 0.15, 0.15, 0.2, 0.1, 0.05, 0.1]  # Marmara daha ağırlıklı
+    region_list = np.random.choice(all_regions, size=n, p=region_weights)
+    city_list = []
+    district_list = []
+    for reg in region_list:
+        city = np.random.choice(region_cities[reg])
+        city_list.append(city)
+        district = np.random.choice(city_districts.get(city, ['Merkez']))
+        district_list.append(district)
+
+    # Kategoriler (cinsiyet, yaş, coğrafya etkisiyle)
     categories = ['Kadın', 'Erkek', 'Çocuk', 'Bebek', 'Home']
     cat_encoder = LabelEncoder()
     cat_encoder.fit(categories)
@@ -53,12 +107,30 @@ def generate_data():
     past_categories = []
     next_category = []
     for i in range(n):
-        if age_true[i] < 30:
-            probs = [0.35, 0.40, 0.15, 0.05, 0.05]
-        elif age_true[i] > 50:
-            probs = [0.10, 0.15, 0.20, 0.25, 0.30]
+        # Cinsiyet bazlı
+        if gender_true[i] == 'Kadın':
+            base_probs = [0.45, 0.25, 0.15, 0.05, 0.10]
         else:
-            probs = [0.25, 0.30, 0.20, 0.10, 0.15]
+            base_probs = [0.25, 0.45, 0.15, 0.05, 0.10]
+        # Yaş bazlı
+        if age_true[i] < 30:
+            age_probs = [0.35, 0.40, 0.15, 0.05, 0.05]
+        elif age_true[i] > 50:
+            age_probs = [0.10, 0.15, 0.20, 0.25, 0.30]
+        else:
+            age_probs = [0.25, 0.30, 0.20, 0.10, 0.15]
+        # Coğrafi etki: Örneğin Ege'de kadın giyim daha popüler, İç Anadolu'da home, Karadeniz'de erkek giyim
+        geo_effect = [1.0, 1.0, 1.0, 1.0, 1.0]
+        reg = region_list[i]
+        if reg == 'Ege':
+            geo_effect[0] = 1.3  # Kadın
+        elif reg == 'İç Anadolu':
+            geo_effect[4] = 1.4  # Home
+        elif reg == 'Karadeniz':
+            geo_effect[1] = 1.3  # Erkek
+        # Kombine
+        probs = (np.array(base_probs) + np.array(age_probs)) / 2
+        probs = probs * np.array(geo_effect)
         if discount_sensitivity[i] > 0.7:
             probs = [0.15, 0.20, 0.25, 0.25, 0.15]
         probs = np.array(probs) / np.sum(probs)
@@ -67,12 +139,16 @@ def generate_data():
         next_cat = np.random.choice(categories, p=probs)
         next_category.append(next_cat)
     
+    # Next purchase 30d
     recency_effect = -0.0025 * (recency_days - 20)**2 + 0.9
     recency_effect = np.clip(recency_effect, 0.2, 0.9)
     log_odds = (recency_effect + 0.1*frequency + 0.005*(monetary_total/1000) +
                 0.08*last_30_days_visits + 0.15*wishlist_count + 0.01*avg_discount_used - 2.0)
     prob_next = 1/(1+np.exp(-log_odds))
     next_purchase_30d = (np.random.rand(n) < prob_next).astype(int)
+
+    wait_days_true = np.random.poisson(lam=25, size=n) + (recency_days * 0.3).astype(int)
+    wait_days_true = np.clip(wait_days_true, 1, 90)
 
     marital_status_true = []
     has_children_true = []
@@ -97,6 +173,9 @@ def generate_data():
     
     df = pd.DataFrame({
         'customer_id': customer_id,
+        'region': region_list,
+        'city': city_list,
+        'district': district_list,
         'recency_days': recency_days,
         'frequency': frequency,
         'monetary_total': monetary_total,
@@ -108,9 +187,11 @@ def generate_data():
         'next_purchase_30d': next_purchase_30d,
         'discount_sensitivity': discount_sensitivity,
         'past_categories': past_categories,
-        'next_category': next_category
+        'next_category': next_category,
+        'wait_days_true': wait_days_true
     })
     ground_truth = {
+        'gender': gender_true,
         'age_group': age_group_true,
         'marital_status': marital_status_true,
         'has_children': has_children_true
@@ -121,11 +202,11 @@ df, cat_encoder, categories, ground_truth = generate_data()
 n = len(df)
 
 # ------------------------------
-# 2. ÖZELLİK MÜHENDİSLİĞİ
+# 2. ÖZELLİK MÜHENDİSLİĞİ (SON 3 KATEGORİ)
 # ------------------------------
 def extract_last3_cat_features(row):
     past = row['past_categories']
-    last3 = past[-3:] if len(past)>=3 else past + ['']*(3-len(past))
+    last3 = past[-3:] if len(past)>=3 else past + ['TAMAM']*(3-len(past))
     counts = {cat: last3.count(cat) for cat in categories}
     return pd.Series([counts[c] for c in categories])
 
@@ -137,7 +218,22 @@ other_features = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_v
 X_base = df[other_features].copy()
 X = pd.concat([X_base, last3_cat_df], axis=1)
 
-# Yaş grubu tahmini (Random Forest)
+# Coğrafi değişkenleri encode et (LabelEncoder)
+city_encoder = LabelEncoder()
+region_encoder = LabelEncoder()
+district_encoder = LabelEncoder()
+df['city_code'] = city_encoder.fit_transform(df['city'])
+df['region_code'] = region_encoder.fit_transform(df['region'])
+df['district_code'] = district_encoder.fit_transform(df['district'])
+
+# Coğrafi özellikleri X'e ekle
+geo_features = ['city_code', 'region_code', 'district_code']
+X_geo = df[geo_features].copy()
+X = pd.concat([X, X_geo], axis=1)
+
+# ------------------------------
+# 3. YAŞ ARALIĞI TAHMİNİ (Random Forest)
+# ------------------------------
 age_groups = ['18-25', '26-35', '36-45', '46+']
 age_encoder = LabelEncoder()
 age_encoder.fit(age_groups)
@@ -148,41 +244,63 @@ rf_age.fit(X_train_age, y_train_age)
 age_acc = rf_age.score(X_test_age, y_test_age)
 df['pred_age_group'] = age_encoder.inverse_transform(rf_age.predict(X))
 
-# Yaş grubu dummy değişkenleri
+# Yaş grubu dummy oluştur (modeller için)
 age_dummies = pd.get_dummies(df['pred_age_group'], prefix='age')
 df = pd.concat([df, age_dummies], axis=1)
 
 # ------------------------------
-# 3. MEDENİ DURUM VE ÇOCUK SAHİBİ OLMA MODELLERİ (Lojistik Regresyon)
+# 4. CİNSİYET TAHMİNİ
 # ------------------------------
-X_marital = pd.concat([X, age_dummies], axis=1)
+X_gender = X.copy()  # coğrafya zaten içinde
+y_gender = (ground_truth['gender'] == 'Kadın').astype(int)
+X_train_g, X_test_g, y_train_g, y_test_g = train_test_split(X_gender, y_gender, test_size=0.2, random_state=42, stratify=y_gender)
+scaler_gender = StandardScaler()
+X_train_g_scaled = scaler_gender.fit_transform(X_train_g)
+X_test_g_scaled = scaler_gender.transform(X_test_g)
+model_gender = LogisticRegression(random_state=42)
+model_gender.fit(X_train_g_scaled, y_train_g)
+gender_acc = model_gender.score(X_test_g_scaled, y_test_g)
+X_gender_scaled_all = scaler_gender.transform(X_gender)
+df['prob_female'] = model_gender.predict_proba(X_gender_scaled_all)[:, 1]
+
+# ------------------------------
+# 5. BEKLEME SÜRESİ TAHMİNİ
+# ------------------------------
+X_wait = X.copy()
+y_wait = df['wait_days_true']
+X_train_wait, X_test_wait, y_train_wait, y_test_wait = train_test_split(X_wait, y_wait, test_size=0.2, random_state=42)
+rf_wait = RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42)
+rf_wait.fit(X_train_wait, y_train_wait)
+wait_rmse = np.sqrt(np.mean((rf_wait.predict(X_test_wait) - y_test_wait)**2))
+df['predicted_wait_days'] = rf_wait.predict(X_wait).astype(int)
+
+# ------------------------------
+# 6. MEDENİ DURUM VE ÇOCUK
+# ------------------------------
+X_marital = X.copy()
 y_marital = np.array([1 if m == 'Evli' else 0 for m in ground_truth['marital_status']])
 y_child = np.array(ground_truth['has_children'])
-
 X_train_m, X_test_m, y_train_m, y_test_m = train_test_split(X_marital, y_marital, test_size=0.2, random_state=42, stratify=y_marital)
 X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X_marital, y_child, test_size=0.2, random_state=42, stratify=y_child)
-
 scaler_marital = StandardScaler()
 X_train_m_scaled = scaler_marital.fit_transform(X_train_m)
 X_test_m_scaled = scaler_marital.transform(X_test_m)
 model_marital = LogisticRegression(random_state=42)
 model_marital.fit(X_train_m_scaled, y_train_m)
 marital_acc = model_marital.score(X_test_m_scaled, y_test_m)
-
 scaler_child = StandardScaler()
 X_train_c_scaled = scaler_child.fit_transform(X_train_c)
 X_test_c_scaled = scaler_child.transform(X_test_c)
 model_child = LogisticRegression(random_state=42)
 model_child.fit(X_train_c_scaled, y_train_c)
 child_acc = model_child.score(X_test_c_scaled, y_test_c)
-
 X_marital_scaled_all = scaler_marital.transform(X_marital)
 X_child_scaled_all = scaler_child.transform(X_marital)
 df['prob_married'] = model_marital.predict_proba(X_marital_scaled_all)[:, 1]
 df['prob_child'] = model_child.predict_proba(X_child_scaled_all)[:, 1]
 
 # ------------------------------
-# 4. KATEGORİ GEÇİŞ MATRİSİ
+# 7. KATEGORİ GEÇİŞ MATRİSİ
 # ------------------------------
 all_transitions = []
 for past in df['past_categories']:
@@ -192,16 +310,10 @@ transition_df = pd.DataFrame(all_transitions, columns=['from', 'to'])
 transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'], normalize='index')
 
 # ------------------------------
-# 5. NEXT PURCHASE MODELİ (Random Forest) - DÜZELTİLMİŞ
+# 8. NEXT PURCHASE MODELİ
 # ------------------------------
-# Dinamik olarak age_ ile başlayan sütunları al (df'de mevcut)
-age_cols = [col for col in df.columns if col.startswith('age_')]
-# Kullanılacak tüm sütunlar
-feature_cols_np = other_features + [f'last3_{c}' for c in categories] + age_cols
-# Sadece df'de bulunanları filtrele (ekstra güvenlik)
-feature_cols_np = [col for col in feature_cols_np if col in df.columns]
-
-X_np = df[feature_cols_np]
+# Özellikler: coğrafi kodlar dahil tüm X sütunları
+X_np = X.copy()
 y_np = df['next_purchase_30d']
 rf_np = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 cv = StratifiedKFold(5, shuffle=True, random_state=42)
@@ -211,21 +323,11 @@ rf_np.fit(X_np, y_np)
 df['next_purchase_prob'] = rf_np.predict_proba(X_np)[:,1]
 
 # ------------------------------
-# 6. MÜŞTERİ SEGMENTASYONU (K-Means)
+# 9. SEGMENTASYON (K-Means) - Coğrafi bilgileri dahil etmiyoruz (sadece davranışsal)
 # ------------------------------
 features_seg = ['recency_days', 'frequency', 'monetary_total', 'last_30_days_visits', 'wishlist_count']
 scaler_seg = StandardScaler()
 X_scaled_seg = scaler_seg.fit_transform(df[features_seg])
-
-# Elbow grafiği
-inertia = [KMeans(k, random_state=42, n_init=10).fit(X_scaled_seg).inertia_ for k in range(2,8)]
-fig_elbow, ax = plt.subplots(figsize=(6,4))
-ax.plot(range(2,8), inertia, marker='o')
-ax.set_title('Elbow Yöntemi (Optimum Küme Sayısı)')
-ax.set_xlabel('Küme Sayısı')
-ax.set_ylabel('Inertia')
-st.pyplot(fig_elbow, use_container_width=False)
-
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
 df['segment'] = kmeans.fit_predict(X_scaled_seg)
 seg_summary = df.groupby('segment').agg({'monetary_total':'mean', 'recency_days':'mean', 'frequency':'mean'}).reset_index()
@@ -242,21 +344,21 @@ seg_summary['segment_name'] = seg_summary.apply(assign_segment_name, axis=1)
 seg_name_map = dict(zip(seg_summary['segment'], seg_summary['segment_name']))
 df['segment_name'] = df['segment'].map(seg_name_map)
 
-# PCA 3B görselleştirme
+# PCA 3B
 pca_3d = PCA(n_components=3)
 pca_result_3d = pca_3d.fit_transform(X_scaled_seg)
 df['pca1'], df['pca2'], df['pca3'] = pca_result_3d[:,0], pca_result_3d[:,1], pca_result_3d[:,2]
 fig_3d = px.scatter_3d(df, x='pca1', y='pca2', z='pca3', color='segment_name',
-                       title='Segmentler (3B PCA Projeksiyonu)',
+                       title='Segmentler (3B PCA)',
                        color_discrete_sequence=px.colors.qualitative.Set2,
                        hover_data=['customer_id', 'monetary_total', 'recency_days'])
 fig_3d.update_layout(width=800, height=600)
 st.plotly_chart(fig_3d, use_container_width=True)
 
 # ------------------------------
-# 7. NEXT CATEGORY MODELİ
+# 10. NEXT CATEGORY MODELİ
 # ------------------------------
-X_cat = pd.concat([X, age_dummies], axis=1)
+X_cat = X.copy()
 y_cat = cat_encoder.transform(df['next_category'])
 X_train_cat, X_test_cat, y_train_cat, y_test_cat = train_test_split(X_cat, y_cat, test_size=0.2, random_state=42, stratify=y_cat)
 rf_cat = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
@@ -267,11 +369,10 @@ df['predicted_category'] = cat_encoder.inverse_transform(rf_cat.predict(X_cat))
 df['predicted_category_proba'] = rf_cat.predict_proba(X_cat).max(axis=1)
 
 # ------------------------------
-# 8. STREAMLIT ARABİRİMİ
+# 11. STREAMLIT ARABİRİMİ (Müşteri seçimi, coğrafi bilgiler gösteriliyor)
 # ------------------------------
 st.markdown("---")
 st.header("🔍 Müşteri Bazlı Analiz ve Öneriler")
-
 customer_ids = df['customer_id'].tolist()
 selected_id = st.selectbox("Bir müşteri ID seçin:", customer_ids)
 cust = df[df['customer_id'] == selected_id].iloc[0]
@@ -281,15 +382,22 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("📋 Müşteri Profili")
     st.metric("Segment", cust['segment_name'])
-    st.metric("Next Purchase Olasılığı", f"{cust['next_purchase_prob']:.0%}")
+    st.metric("Next Purchase Olasılığı (30 gün)", f"{cust['next_purchase_prob']:.0%}")
+    st.metric("Tahmini Bekleme Süresi (gün)", f"{cust['predicted_wait_days']} gün")
     st.metric("Son Alışveriş (gün)", f"{cust['recency_days']} gün")
     st.metric("Toplam Harcama (TL)", f"{cust['monetary_total']:,.0f}")
     st.metric("Wishlist Adedi", cust['wishlist_count'])
     st.metric("İndirim Duyarlılığı", f"{cust['discount_sensitivity']:.0%}")
     st.metric("Tahmini Yaş Aralığı", cust['pred_age_group'])
-    st.metric("Evli Olma Olasılığı (Tahmini)", f"{cust['prob_married']:.0%}")
-    st.metric("Çocuk Sahibi Olma Olasılığı (Tahmini)", f"{cust['prob_child']:.0%}")
-    st.caption(f"Not: Gerçek yaş grubu: {ground_truth['age_group'][idx]}, "
+    st.metric("Kadın Olma Olasılığı", f"{cust['prob_female']:.0%}")
+    st.metric("Erkek Olma Olasılığı", f"{1-cust['prob_female']:.0%}")
+    st.metric("Evli Olma Olasılığı", f"{cust['prob_married']:.0%}")
+    st.metric("Çocuk Sahibi Olma Olasılığı", f"{cust['prob_child']:.0%}")
+    st.metric("Bölge", cust['region'])
+    st.metric("Şehir", cust['city'])
+    st.metric("İlçe", cust['district'])
+    st.caption(f"Not: Gerçek cinsiyet: {ground_truth['gender'][idx]}, "
+               f"Gerçek yaş grubu: {ground_truth['age_group'][idx]}, "
                f"Gerçek medeni durum: {ground_truth['marital_status'][idx]}, "
                f"Gerçek çocuk: {'Evet' if ground_truth['has_children'][idx] else 'Hayır'}")
 
@@ -297,17 +405,18 @@ with col2:
     st.subheader("🎯 Kişisel Öneriler")
     predicted_cat = cust['predicted_category']
     pred_proba = cust['predicted_category_proba']
-    st.info(f"📂 **Tahmin Edilen Bir Sonraki Kategori:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
+    st.info(f"📂 **Bir Sonraki Kategori Tahmini:** {predicted_cat} (Güven: %{pred_proba*100:.0f})")
     
     last_cat = cust['past_categories'][-1]
     if last_cat in transition_matrix.index:
         trans_probs = transition_matrix.loc[last_cat].sort_values(ascending=False)
-        st.markdown("🔄 **Kategori Geçiş Olasılıkları (son kategori bazlı):**")
+        st.markdown("🔄 **Kategori Geçiş Olasılıkları (son kategoriye göre):**")
         for cat, prob in trans_probs.head(3).items():
             st.write(f"- {last_cat} → {cat}: %{prob*100:.0f}")
     else:
         st.write("Geçiş bilgisi yetersiz.")
     
+    # Mevsimsel ürün önerisi
     month_season = {1:'Kış',2:'Kış',3:'İlkbahar',4:'İlkbahar',5:'İlkbahar',6:'Yaz',
                     7:'Yaz',8:'Yaz',9:'Sonbahar',10:'Sonbahar',11:'Sonbahar',12:'Kış'}
     season = month_season[cust['preferred_month']]
@@ -337,18 +446,22 @@ with col2:
     st.markdown(f"🏷️ **İndirim Stratejisi:** {disc_str}")
 
 # ------------------------------
-# 9. PERFORMANS ÖZETİ
+# 12. PERFORMANS ÖZETİ
 # ------------------------------
 st.markdown("---")
 st.header("📊 Model Performans Özeti")
-col_met1, col_met2, col_met3 = st.columns(3)
+col_met1, col_met2, col_met3, col_met4, col_met5 = st.columns(5)
 with col_met1:
-    st.metric("Yaş Aralığı Tahmin Doğruluğu", f"{age_acc:.2%}")
+    st.metric("Cinsiyet Doğruluğu", f"{gender_acc:.2%}")
 with col_met2:
-    st.metric("Evli Olma Tahmin Doğruluğu", f"{marital_acc:.2%}")
+    st.metric("Yaş Aralığı Doğruluğu", f"{age_acc:.2%}")
 with col_met3:
-    st.metric("Çocuk Sahibi Olma Doğruluğu", f"{child_acc:.2%}")
+    st.metric("Evli Olma Doğruluğu", f"{marital_acc:.2%}")
+with col_met4:
+    st.metric("Çocuk Sahibi Doğruluğu", f"{child_acc:.2%}")
+with col_met5:
+    st.metric("Bekleme Süresi RMSE (gün)", f"{wait_rmse:.1f}")
 st.metric("Next Purchase ROC AUC (CV)", f"{auc_mean:.3f}")
 st.metric("Next Category Doğruluğu", f"{cat_accuracy:.2%}")
 
-st.success("✅ Prototip başarıyla çalışıyor. Yaş aralığı, evlilik ve çocuk sahibi olma olasılıkları tahmin edilmektedir.")
+st.success("✅ Prototip, cinsiyet, yaş, medeni durum, çocuk, bekleme süresi, next purchase, next category ve coğrafi (bölge/şehir/ilçe) bilgilerini kullanarak tahmin yapmaktadır.")
